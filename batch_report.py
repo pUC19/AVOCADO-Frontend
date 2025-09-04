@@ -1,4 +1,4 @@
-# batch_report.py — AVOCADO Batch Report (finale, robuste Version 4)
+# batch_report.py — AVOCADO Batch Report (finale, robuste Version 5)
 from __future__ import annotations
 
 import re
