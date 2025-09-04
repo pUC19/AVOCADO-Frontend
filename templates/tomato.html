@@ -1,0 +1,692 @@
+{% extends "base.html" %}
+{% block title %}TOMATO — Manuelle FD-Analyse{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-4">
+  <img src="{{ url_for('static', filename='tomato.png') }}" alt="TOMATO Logo" width="40" height="40" class="rounded">
+  <h1 class="section-title h3 mb-0">TOMATO — Manuelle FD-Analyse</h1>
+</div>
+
+<div class="card card-glass mb-4">
+  <div class="card-body">
+    <form id="tomatoUpload" onsubmit="return false;">
+      <div class="row g-3 align-items-end">
+        <div class="col-lg-6">
+          <label class="form-label">Datei (.h5 / .csv)</label>
+          <input type="file" id="file" class="form-control" accept=".h5,.csv">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Datentyp</label>
+          <select id="kind" class="form-select">
+            <option value="HF">HF</option>
+            <option value="LF">LF</option>
+            <option value="CSV">CSV</option>
+          </select>
+        </div>
+        <div class="col-md-4">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" id="trap1" checked>
+            <label class="form-check-label" for="trap1">Trap 1×</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" id="len_um" checked>
+            <label class="form-check-label" for="len_um">CSV-Länge in µm</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+        <button id="btnLoad" class="btn btn-primary" type="submit">Kurve laden</button>
+        <span class="chip" title="Aktuelle Datei">
+          <span class="text-muted">Datei:</span>
+          <span id="fileInfo" class="truncate" style="max-width:480px">–</span>
+        </span>
+      </div>
+      <hr class="my-3">
+
+      <div class="row g-3 align-items-end">
+        <div class="col-lg-8">
+          <label class="form-label">Server-Ordner (absoluter Pfad)</label>
+          <div class="input-group">
+            <input type="text" id="serverFolder" class="form-control" placeholder="/path/to/folder">
+            <button id="loadFolder" class="btn btn-outline-primary" type="button">Dateien laden</button>
+          </div>
+          <div class="form-text">Unterstützt *.h5 und *.csv.</div>
+        </div>
+        <div class="col-lg-4">
+          <label class="form-label">Datei im Ordner</label>
+          <div class="input-group">
+            <button id="prevFile" class="btn btn-outline-secondary" type="button" title="Vorherige (←)">◀</button>
+            <select id="serverFileList" class="form-select" title="Dateiliste"></select>
+            <button id="nextFile" class="btn btn-outline-secondary" type="button" title="Nächste (→)">▶</button>
+          </div>
+          <div class="form-text">Mit ◀/▶ oder Pfeiltasten durch die Ordnerdateien wechseln.</div>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card card-glass mb-4">
+  <div class="card-body p-0">
+    <div id="plot" class="plot-wrap" style="height:520px;"></div>
+
+    <div class="px-3 py-2 border-top small text-muted">
+      Geladene Datei: <span id="fileInfoPlot" class="mono">–</span>
+    </div>
+
+    <div class="sticky-actions d-flex flex-wrap gap-2 justify-content-between align-items-center p-3">
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <button id="toggleMode" class="btn btn-soft" type="button">
+          Klick setzt: <b id="modeLabel">Start</b>
+        </button>
+        <button id="clearSteps" class="btn btn-outline-danger" type="button">Alle Steps löschen</button>
+        <details class="ms-1">
+          <summary class="text-muted">Step-Liste</summary>
+          <div class="table-responsive mt-2">
+            <table class="table table-sm align-middle mb-0">
+              <thead>
+                <tr><th>#</th><th>Start [nm]</th><th>Ende [nm]</th><th class="text-end">Aktion</th></tr>
+              </thead>
+              <tbody id="stepsTbody"></tbody>
+            </table>
+          </div>
+        </details>
+      </div>
+
+      <div class="d-flex flex-wrap gap-2 align-items-end">
+        <div class="input-group" style="min-width:260px;">
+          <label class="input-group-text" for="model">Modell</label>
+          <select id="model" class="form-select">
+            <option>WLC+WLC</option>
+            <option>WLC+FJC</option>
+          </select>
+        </div>
+        <button id="analyze" class="btn btn-success" type="button">Analysieren</button>
+        <button id="exportXLSX" class="btn btn-outline-success" type="button" title="CSV+XLSX (OT-Schema) als ZIP">Export</button>
+      </div>
+    </div>
+
+    <div id="analyzeProgress" class="progress w-100 mt-2" style="display:none; height:20px;">
+      <div id="analyzeProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+           role="progressbar" style="width:0%">0%</div>
+    </div>
+    <div id="analyzeProgressMsg" class="form-text mt-1 ps-2 pb-2" style="display:none;">&nbsp;</div>
+  </div>
+</div>
+
+<div id="smoothFileSelectionCard" class="card card-glass mt-4" style="display:none;">
+  <div class="card-body">
+    <h5 class="card-title">Sammelplot für <i>smooth</i>-Dateien</h5>
+    <p class="card-subtitle mb-3 text-muted">Wählen Sie die zu plottenden Dateien aus dem aktuellen Server-Ordner aus.</p>
+    <div id="smoothFileList" class="list-group mb-3" style="max-height: 300px; overflow-y: auto;">
+      </div>
+    <button id="plotSelectedSmoothBtn" class="btn btn-info">Ausgewählte plotten</button>
+    <button id="downloadSvgBtn" class="btn btn-outline-secondary" style="display:none;">Als SVG speichern</button>
+  </div>
+</div>
+
+<div id="smoothPlotCard" class="card card-glass mt-4" style="display:none;">
+  <div class="card-body">
+    <div id="smoothPlot" class="plot-wrap" style="height:520px;"></div>
+  </div>
+</div>
+
+
+<div class="card card-glass mt-4">
+  <div class="card-body">
+    <h5 class="card-title mb-3">Ergebnisse</h5>
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle">
+        <thead>
+        <tr>
+          <th>Step</th><th>Datei</th>
+          <th>Lc_ds</th><th>Lp_ds</th><th>St_ds</th>
+          <th>Lc_ss</th><th>Lp_ss</th><th>St_ss</th>
+          <th>f_off</th><th>d_off</th><th>Work [pN·nm]</th><th>Work [kT]</th>
+        </tr>
+        </thead>
+        <tbody id="resultsTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.plot.ly/plotly-2.29.1.min.js"></script>
+<script>
+/* -------------------- State -------------------- */
+let token = null;
+let mode = "start";
+let steps = [];
+let curveTrace = null;
+
+const plotDiv      = document.getElementById("plot");
+const stepsTbody   = document.getElementById("stepsTbody");
+const resultsTbody = document.getElementById("resultsTbody");
+const modeLabel    = document.getElementById("modeLabel");
+const fileInfo     = document.getElementById("fileInfo");
+const fileInfoPlot = document.getElementById("fileInfoPlot");
+
+/* -------------------- Styling Helpers (Theme-aware) -------------------- */
+function isDark(){ return document.documentElement.getAttribute("data-bs-theme")==="dark"; }
+function themePalette(){
+  // dezente, moderne Palette
+  return {
+    fg: isDark()? "#e5e7eb" : "#111827",
+    grid: isDark()? "rgba(229,231,235,0.12)" : "rgba(17,24,39,0.10)",
+    axis: isDark()? "rgba(229,231,235,0.4)"  : "rgba(17,24,39,0.35)",
+    paper: "transparent",
+    plot:  "transparent",
+    curve: isDark()? "#f87171" : "#e74c3c",   // Hauptkurve (Rotton)
+    markStart: "#ef4444",
+    markEnd:   "#3b82f6",
+    fit:  isDark()? "#22d3ee" : "#0ea5e9"    // Fit-Linien
+  };
+}
+function coolLayout(){
+  const p = themePalette();
+  return {
+    margin:{t:40,l:60,r:28,b:60},
+    paper_bgcolor:p.paper,
+    plot_bgcolor:p.plot,
+    font:{family:"Inter, ui-sans-serif, system-ui, -apple-system", size:14, color:p.fg},
+    xaxis:{
+      title:"Distance [nm]",
+      gridcolor:p.grid,
+      linecolor:p.axis,
+      zeroline:false
+    },
+    yaxis:{
+      title:"Force [pN]",
+      gridcolor:p.grid,
+      linecolor:p.axis,
+      zeroline:false
+    },
+    legend:{
+      orientation:"h",
+      y:-0.22, x:0.5, xanchor:"center",
+      bgcolor:"rgba(255,255,255,0.0)"
+    },
+    hoverlabel:{
+      bgcolor: isDark()? "rgba(17,24,39,0.9)" : "rgba(255,255,255,0.95)",
+      bordercolor: p.axis,
+      font:{size:13, color:p.fg}
+    },
+    dragmode:"pan",
+    clickmode:"event+select",
+    transition:{duration:250, easing:"cubic-in-out"}
+  };
+}
+function coolConfig(){
+  return {
+    responsive:true,
+    scrollZoom:true,
+    displayModeBar:true,
+    displaylogo:false,
+    modeBarButtonsToRemove:["lasso2d","select2d","autoScale2d","hoverClosestCartesian","toggleSpikelines"]
+  };
+}
+function restyleForTheme(){
+  Plotly.relayout(plotDiv, coolLayout());
+}
+
+/* -------------------- Small utils -------------------- */
+function baseName(p){ return String(p||"").split(/[\\/]/).pop(); }
+function setMode(m){ mode = m; modeLabel.textContent = (m === "start") ? "Start" : "Ende"; }
+function redrawStepTable(){
+  stepsTbody.innerHTML = "";
+  steps.forEach((s, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td>${s.start.toFixed(1)}</td>
+      <td>${isFinite(s.end)? s.end.toFixed(1): ""}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-secondary" data-idx="${i}" data-act="swap">↔︎</button>
+        <button class="btn btn-sm btn-outline-danger" data-idx="${i}" data-act="del">Löschen</button>
+      </td>`;
+    stepsTbody.appendChild(tr);
+  });
+}
+function addMarker(x, y, name, color){
+  Plotly.addTraces(plotDiv, {
+    x:[x], y:[y], mode:"markers+text", name,
+    marker:{size:9, color, line:{width:1.5, color:"rgba(255,255,255,0.8)"}},
+    text:[name.includes("Start")?"S":"E"],
+    textposition:"top center",
+    showlegend:false
+  });
+}
+
+/* -------------------- Plot interactions -------------------- */
+function bindPlotClicks(){
+  plotDiv.removeAllListeners?.("plotly_click");
+  plotDiv.on("plotly_click", (ev) => {
+    if (!token) return;
+    const pt = ev.points && ev.points[0];
+    if (!pt) return;
+    const d = pt.x, f = pt.y;
+    const pal = themePalette();
+
+    if (mode === "start"){
+      steps.push({ start: d, end: Number.POSITIVE_INFINITY });
+      addMarker(d, f, `Step ${steps.length} Start`, pal.markStart);
+      setMode("end");
+    } else {
+      if (!steps.length){ return; }
+      const s = steps[steps.length-1];
+      s.end = d;
+      addMarker(d, f, `Step ${steps.length} Ende`, pal.markEnd);
+      setMode("start");
+    }
+    redrawStepTable();
+  });
+}
+
+/* -------------------- Upload -------------------- */
+document.getElementById("tomatoUpload").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData();
+  const file = document.getElementById("file").files[0];
+  if (!file){ alert("Bitte Datei wählen."); return; }
+  fd.append("file", file);
+  fd.append("kind", document.getElementById("kind").value);
+  fd.append("trap1", document.getElementById("trap1").checked ? "on" : "");
+  fd.append("len_um", document.getElementById("len_um").checked ? "on" : "");
+
+  const res = await fetch("/api/tomato/upload", { method:"POST", body: fd });
+  const data = await res.json();
+  if (!res.ok){ alert("Fehler: "+(data.error||res.statusText)); return; }
+
+  token = data.token;
+  steps = []; setMode("start"); redrawStepTable();
+
+  // Dateiname oben + unter dem Plot
+  fileInfo.textContent = data.filename;
+  fileInfo.title = data.filename;
+  fileInfoPlot.textContent = data.filename;
+  fileInfoPlot.title = data.filename;
+
+  const pal = themePalette();
+  curveTrace = {
+    x: data.x, y: data.y,
+    mode: "lines",
+    name: "FD curve",
+    showlegend:false,
+    line:{width:2, color: pal.curve}
+  };
+
+  await Plotly.newPlot(plotDiv, [curveTrace], coolLayout(), coolConfig());
+  bindPlotClicks();
+});
+
+/* -------------------- Step-Controls -------------------- */
+document.getElementById("toggleMode").addEventListener("click", () => { setMode(mode === "start" ? "end" : "start"); });
+document.getElementById("clearSteps").addEventListener("click", () => {
+  steps = []; redrawStepTable(); setMode("start");
+  if (curveTrace){
+    Plotly.react(plotDiv, [curveTrace], coolLayout(), coolConfig());
+    bindPlotClicks();
+  }
+});
+stepsTbody.addEventListener("click", (e) => {
+  const btn = e.target.closest("button"); if (!btn) return;
+  const i = +btn.dataset.idx, act = btn.dataset.act;
+  if (act === "del"){ steps.splice(i,1); }
+  if (act === "swap"){ const s = steps[i]; [s.start, s.end] = [s.end, s.start]; }
+  redrawStepTable();
+});
+
+/* -------------------- Analyse mit Fortschrittsbalken -------------------- */
+document.getElementById("analyze").addEventListener("click", async () => {
+  if (!token){ alert("Bitte zuerst eine Kurve laden."); return; }
+  const cleaned = steps
+    .filter(s => isFinite(s.start) && isFinite(s.end))
+    .map(s => (s.start <= s.end ? s : {start:s.end, end:s.start}));
+  if (!cleaned.length){ alert("Bitte mindestens einen vollständigen Step (Start & Ende) setzen."); return; }
+
+  const progressWrap = document.getElementById("analyzeProgress");
+  const progressBar  = document.getElementById("analyzeProgressBar");
+  const progressMsg  = document.getElementById("analyzeProgressMsg");
+  progressWrap.style.display = "block";
+  progressMsg.style.display  = "block";
+  progressBar.classList.remove("bg-danger","bg-success");
+  progressBar.style.width = "0%";
+  progressBar.textContent = "0%";
+  progressMsg.textContent = "Wird gestartet…";
+
+  let job_id = null;
+  try {
+    const res = await fetch("/api/tomato/analyze_start", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ token, steps: cleaned, model: document.getElementById("model").value })
+    });
+    const data = await res.json();
+    if (!res.ok){ throw new Error(data.error || res.statusText); }
+    job_id = data.job_id;
+  } catch(err){
+    progressBar.classList.add("bg-danger");
+    progressBar.textContent = "Fehler";
+    progressMsg.textContent = String(err);
+    return;
+  }
+
+  let timer = null;
+  async function poll(){
+    try{
+      const r = await fetch(`/api/tomato/analyze_status/${job_id}`);
+      const j = await r.json();
+      if (!r.ok){ throw new Error(j.error || r.statusText); }
+      if (typeof j.pct === "number"){
+        progressBar.style.width = `${j.pct}%`;
+        progressBar.textContent = `${j.pct}%`;
+      }
+      if (j.msg){ progressMsg.textContent = j.msg; }
+
+      if (j.done){
+        clearInterval(timer);
+        if (j.error){
+          progressBar.classList.add("bg-danger");
+          progressBar.textContent = "Fehler";
+          progressMsg.textContent = j.error;
+          return;
+        }
+        const rr = await fetch(`/api/tomato/analyze_result/${job_id}`);
+        const payload = await rr.json();
+        if (!rr.ok){ throw new Error(payload.error || rr.statusText); }
+
+        const pal = themePalette();
+        // Fits in Plot & Tabelle füllen
+        for (const f of (payload.fits || [])){
+          Plotly.addTraces(plotDiv, {
+            x:f.x, y:f.y, mode:"lines", name:f.name,
+            line:{dash:f.dash||"dash", width:2, color: pal.fit}
+          });
+        }
+        for (const r of (payload.results || [])){
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${r.step}</td>
+            <td>${payload.filename || ""}</td>
+            <td>${r.Lc_ds ?? ""}</td><td>${r.Lp_ds ?? ""}</td><td>${r.St_ds ?? ""}</td>
+            <td>${r.Lc_ss ?? ""}</td><td>${r.Lp_ss ?? ""}</td><td>${r.St_ss ?? ""}</td>
+            <td>${r.f_off ?? ""}</td><td>${r.d_off ?? ""}</td>
+            <td>${r.work_pNnm ?? ""}</td><td>${r.work_kT ?? ""}</td>`;
+          resultsTbody.appendChild(tr);
+        }
+        progressBar.classList.add("bg-success");
+        progressBar.style.width = "100%";
+        progressBar.textContent = "Fertig";
+        progressMsg.textContent = "Analyse abgeschlossen.";
+      }
+    }catch(e){
+      clearInterval(timer);
+      progressBar.classList.add("bg-danger");
+      progressBar.textContent = "Fehler";
+      progressMsg.textContent = String(e);
+    }
+  }
+  timer = setInterval(poll, 500);
+  poll();
+});
+
+/* -------------------- Export -------------------- */
+document.getElementById("exportXLSX").addEventListener("click", async () => {
+  try{
+    const res = await fetch("/api/tomato/export", { method:"POST" });
+    if (!res.ok){
+      const j = await res.json().catch(()=>({error: res.statusText}));
+      throw new Error(j.error || res.statusText);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tomato_ergebnisse_TOMATO_OT-Ergebnisse.zip";
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1000);
+  }catch(e){
+    alert("Export fehlgeschlagen: " + e.message);
+  }
+});
+
+/* -------------------- Ordnerbetrieb -------------------- */
+const serverFolder   = document.getElementById("serverFolder");
+const loadFolderBtn  = document.getElementById("loadFolder");
+const serverFileList = document.getElementById("serverFileList");
+const prevBtn        = document.getElementById("prevFile");
+const nextBtn        = document.getElementById("nextFile");
+let serverFiles = []; let serverIdx = -1;
+
+async function loadServerFile(path) {
+  steps = []; redrawStepTable(); setMode("start");
+  await Plotly.react(plotDiv, [], coolLayout(), coolConfig());
+  const res = await fetch("/api/tomato/load_server_file", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({path})
+  });
+  const data = await res.json();
+  if (!res.ok) { alert("Fehler: " + (data.error||res.status)); return; }
+  token = data.token;
+
+  // Anzeige oben: Dateiname, Tooltip = voller Pfad
+  fileInfo.textContent = data.filename;
+  fileInfo.title = path;
+
+  // Anzeige unter dem Plot: kurzer Name, Tooltip = voller Pfad
+  fileInfoPlot.textContent = baseName(path);
+  fileInfoPlot.title = path;
+
+  const pal = themePalette();
+  curveTrace = { x: data.x, y: data.y, mode:"lines", name:"FD curve", showlegend:false, line:{width:2, color: pal.curve} };
+  await Plotly.newPlot(plotDiv, [curveTrace], coolLayout(), coolConfig());
+  bindPlotClicks();
+}
+async function loadFolderList() {
+  const f = serverFolder.value.trim();
+  if (!f) { alert("Bitte einen Server-Ordner angeben."); return; }
+  
+  // -- Laden der Haupt-Dateiliste (.h5, .csv) --
+  const res = await fetch(`/api/tomato/list?folder=${encodeURIComponent(f)}`);
+  const data = await res.json();
+  if (!res.ok) { alert("Fehler: " + (data.error||res.status)); return; }
+  serverFiles = data.files || [];
+  serverIdx = serverFiles.length ? 0 : -1;
+
+  serverFileList.innerHTML = "";
+  serverFiles.forEach((p, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = p;
+    serverFileList.appendChild(opt);
+  });
+
+  if (serverIdx >= 0) {
+    serverFileList.value = String(serverIdx);
+    await loadServerFile(serverFiles[serverIdx]);
+  } else {
+    alert("Im Ordner wurden keine .h5 oder .csv Dateien gefunden.");
+  }
+
+  // -- Laden der smooth.csv Liste für den Sammelplot --
+  await loadSmoothFileList(f);
+}
+loadFolderBtn.addEventListener("click", loadFolderList);
+serverFileList.addEventListener("change", async (e) => {
+  const i = +e.target.value;
+  if (!Number.isFinite(i) || i<0 || i>=serverFiles.length) return;
+  serverIdx = i; await loadServerFile(serverFiles[serverIdx]);
+});
+prevBtn.addEventListener("click", async () => {
+  if (!serverFiles.length) return;
+  serverIdx = (serverIdx - 1 + serverFiles.length) % serverFiles.length;
+  serverFileList.value = String(serverIdx);
+  await loadServerFile(serverFiles[serverIdx]);
+});
+nextBtn.addEventListener("click", async () => {
+  if (!serverFiles.length) return;
+  serverIdx = (serverIdx + 1) % serverFiles.length;
+  serverFileList.value = String(serverIdx);
+  await loadServerFile(serverFiles[serverIdx]);
+});
+window.addEventListener("keydown", async (e) => {
+  if (!serverFiles.length) return;
+  if (e.key === "ArrowLeft") { prevBtn.click(); }
+  if (e.key === "ArrowRight"){ nextBtn.click(); }
+});
+
+/* -------------------- Theme Wechsel live anwenden -------------------- */
+const obs = new MutationObserver((muts)=>{
+  for (const m of muts){
+    if (m.type==="attributes" && m.attributeName==="data-bs-theme"){
+      restyleForTheme();
+      // Kurvenfarbe anpassen
+      if (curveTrace){
+        const pal = themePalette();
+        Plotly.restyle(plotDiv, {"line.color":[pal.curve]}, [0]);
+      }
+    }
+  }
+});
+obs.observe(document.documentElement, { attributes:true });
+
+/* -------------------- Sammelplot smooth.csv -------------------- */
+const smoothFileSelectionCard = document.getElementById("smoothFileSelectionCard");
+const smoothFileListDiv = document.getElementById("smoothFileList");
+const plotSelectedSmoothBtn = document.getElementById("plotSelectedSmoothBtn");
+const smoothPlotCard = document.getElementById("smoothPlotCard");
+const smoothPlotDiv = document.getElementById("smoothPlot");
+
+
+async function loadSmoothFileList(folder) {
+    try {
+        const res = await fetch("/api/tomato/list_smooth_files", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ folder })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Fehler");
+
+        smoothFileListDiv.innerHTML = '';
+        if (data.smooth_files && data.smooth_files.length > 0) {
+            smoothFileSelectionCard.style.display = "block";
+            data.smooth_files.forEach(path => {
+                const label = document.createElement('label');
+                label.className = 'list-group-item d-flex align-items-center';
+                label.innerHTML = `
+                    <input class="form-check-input me-2" type="checkbox" value="${path}">
+                    <span class="truncate" title="${path}">${baseName(path)}</span>
+                `;
+                smoothFileListDiv.appendChild(label);
+            });
+        } else {
+            smoothFileSelectionCard.style.display = "none";
+        }
+    } catch(err) {
+        console.error("Could not load smooth file list:", err);
+        smoothFileSelectionCard.style.display = "none";
+    }
+}
+
+
+plotSelectedSmoothBtn.addEventListener("click", async () => {
+    const selectedCheckboxes = smoothFileListDiv.querySelectorAll("input[type=checkbox]:checked");
+    const selectedFiles = Array.from(selectedCheckboxes).map(cb => cb.value);
+
+    if (selectedFiles.length === 0) {
+        alert("Bitte wählen Sie mindestens eine Datei aus.");
+        return;
+    }
+
+    plotSelectedSmoothBtn.disabled = true;
+    plotSelectedSmoothBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Plotte...`;
+
+    try {
+        const res = await fetch("/api/tomato/plot_selected_smooth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ files: selectedFiles })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Fehler beim Laden der Kurvendaten.");
+        if (!data.curves || data.curves.length === 0) {
+            alert("Die ausgewählten Dateien konnten nicht gelesen werden oder enthalten keine Daten.");
+            smoothPlotCard.style.display = "none";
+            return;
+        }
+
+        const categoryColors = {
+            'forward-trap': '#007bff',  // Leuchtend Blau
+            'forward-ref':  '#17a2b8',  // Türkis
+            'reverse-trap': '#dc3545',  // Kräftiges Rot
+            'reverse-ref':  '#fd7e14',  // Orange
+            'unknown':      '#6c757d'   // Grau
+        };
+
+        const dataTraces = data.curves.map(curve => ({
+            x: curve.x,
+            y: curve.y,
+            mode: 'lines',
+            name: curve.filename, // Name für Hover-Info
+            line: { 
+                width: 1.5, 
+                color: categoryColors[curve.category] || categoryColors['unknown']
+            },
+            opacity: 0.7,
+            hoverinfo: 'x+y+name',
+            legendgroup: curve.category, // Gruppiert für Legende
+            showlegend: false // Individuelle Legende ausblenden
+        }));
+        
+        // Dummy-Traces für eine saubere Legende
+        const legendTraces = [
+            { name: 'Forward-Trap', x: [null], y: [null], mode: 'lines', line: { color: categoryColors['forward-trap'] }, legendgroup: 'forward-trap' },
+            { name: 'Forward-Ref',  x: [null], y: [null], mode: 'lines', line: { color: categoryColors['forward-ref'] },  legendgroup: 'forward-ref' },
+            { name: 'Reverse-Trap', x: [null], y: [null], mode: 'lines', line: { color: categoryColors['reverse-trap'] }, legendgroup: 'reverse-trap' },
+            { name: 'Reverse-Ref',  x: [null], y: [null], mode: 'lines', line: { color: categoryColors['reverse-ref'] },  legendgroup: 'reverse-ref' }
+        ];
+        
+        const allTraces = legendTraces.concat(dataTraces);
+
+        const layout = coolLayout();
+        const folderName = baseName(document.getElementById("serverFolder").value.trim());
+        layout.title = `Sammelplot: ${data.curves.length} Kurven aus "${folderName}"`;
+        layout.showlegend = true;
+        layout.legend.orientation = 'h';
+        layout.legend.y = -0.25;
+        
+        await Plotly.newPlot(smoothPlotDiv, allTraces, layout, coolConfig());
+        // Show SVG download button after plotting
+        document.getElementById('downloadSvgBtn').style.display = 'inline-block';
+
+        smoothPlotCard.style.display = "block";
+        smoothPlotCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    } catch (err) {
+        alert("Fehler: " + err.message);
+        smoothPlotCard.style.display = "none";
+    } finally {
+        plotSelectedSmoothBtn.disabled = false;
+        plotSelectedSmoothBtn.textContent = "Ausgewählte plotten";
+    }
+});
+
+// Event listener for the new SVG download button
+document.getElementById('downloadSvgBtn').addEventListener('click', () => {
+    const folderName = baseName(document.getElementById("serverFolder").value.trim()) || "Sammelplot";
+    const filename = `Sammelplot_${folderName}_${new Date().toISOString().split('T')[0]}.svg`;
+    
+    Plotly.downloadImage(smoothPlotDiv, {
+        format: 'svg', 
+        width: 1000, 
+        height: 600, 
+        filename: filename
+    });
+});
+</script>
+{% endblock %}

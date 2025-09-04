@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}OT‑Auswertung (Excel) – ΔLc & Plots{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-4">
+  <img src="{{ url_for('static', filename='carrot.png') }}" alt="CARROT Logo" width="48" height="48" class="rounded">
+  <h1 class="section-title h3 mb-0">CARROT — OT-Auswertung aus Excel</h1>
+</div>
+
+<div class="card card-glass">
+  <div class="card-body">
+    <p class="text-muted mb-3">
+      Lade eine bestehende Ergebnis-<strong>.xlsx</strong>-Datei hoch (z. B. aus deiner automatischen Analyse).
+      Die App berechnet <strong>ΔLc</strong>, erzeugt <strong>KDE</strong>- und <strong>Scatter</strong>-Plots
+      und gibt ein neues Excel mit <em>eingebetteten</em> Grafiken zurück.
+    </p>
+
+
+    <form id="form" onsubmit="return false;" class="row g-3">
+      <div class="col-md-8">
+        <label class="form-label">Excel‑Datei (.xlsx)</label>
+        <input type="file" id="xlsx" class="form-control" accept=".xlsx" required>
+      </div>
+      <!-- NEU: Smooth-Ordner -->
+      <div class="col-md-8">
+        <label class="form-label">Smooth-Ordner (Server-Pfad, optional)</label>
+        <input type="text" id="smooth_dir" class="form-control"
+              placeholder="/data/ot_runs/20230726/smooth">
+        <div class="form-text">
+          Wenn gesetzt, werden die FD-Kurven ausschließlich aus diesem Ordner gelesen.
+          Sonst nutzt die App den Ordner der hochgeladenen XLSX.
+        </div>
+      </div>
+
+      <div class="col-md-4 d-grid align-items-end">
+        <button id="run" class="btn btn-success mt-md-4">Auswertung starten</button>
+      </div>
+    </form>
+
+    <progress id="prog" max="100" value="0" class="w-100 mt-3" style="display:none;"></progress>
+    <div id="status" class="small text-muted mt-2"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const form = document.getElementById("form");
+const btn  = document.getElementById("run");
+const inp  = document.getElementById("xlsx");
+const prog = document.getElementById("prog");
+const statusEl = document.getElementById("status");
+
+btn.addEventListener("click", async ()=>{
+  const file = inp.files?.[0];
+  if(!file){ alert("Bitte eine .xlsx-Datei auswählen."); return; }
+  if(!file.name.toLowerCase().endsWith(".xlsx")){ alert("Nur .xlsx wird unterstützt."); return; }
+
+  statusEl.textContent = "Wird verarbeitet …";
+  prog.style.display = ""; prog.value = 15;
+
+  const fd = new FormData();
+  fd.append("file", file);
+  // NEU: Smooth-Ordner hinzufügen (kann leer sein)
+  const smoothField = document.getElementById("smooth_dir");
+  if(smoothField && smoothField.value.trim() !== ""){
+    fd.append("smooth_dir", smoothField.value.trim());
+  }
+  try{
+    const res = await fetch("/api/ot/analyze_excel", { method:"POST", body: fd });
+    if(!res.ok){
+      const j = await res.json().catch(()=>({error: res.statusText}));
+      alert("Fehler: " + (j.error || res.status));
+      statusEl.textContent = "Fehlgeschlagen.";
+      prog.style.display = "none";
+      return;
+    }
+    prog.value = 85;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const base = file.name.replace(/\.xlsx$/i, "") + "_OT-Auswertung_DeltaLC.xlsx";
+    a.download = base;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 1500);
+    statusEl.textContent = "Fertig. Datei heruntergeladen.";
+    prog.value = 100;
+    setTimeout(()=>prog.style.display = "none", 1200);
+  }catch(e){
+    console.error(e);
+    alert("Unerwarteter Fehler.");
+    statusEl.textContent = "Fehlgeschlagen.";
+    prog.style.display = "none";
+  }
+});
+</script>
+{% endblock %}

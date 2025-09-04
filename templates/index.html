@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}AVOCADO — Start{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center gap-3 mb-4">
+  <img src="{{ url_for('static', filename='favicon.png') }}" alt="AVOCADO Logo" width="48" height="48" class="rounded">
+  <h1 class="section-title h3 mb-0">AVOCADO — Flask Frontend</h1>
+</div>
+
+<div class="row g-4">
+  <!-- Option A -->
+  <aside class="col-lg-6">
+    <div class="card card-glass h-100">
+      <div class="card-body">
+        <h3 class="h5 mb-2">Option A · Server-Ordner (kein Upload)</h3>
+        <p class="text-muted mb-3">Analysiere Dateien direkt auf dem Server ( *.h5 / *.csv ).</p>
+
+        <form action="{{ url_for('set_server_folder') }}" method="post" class="row g-3">
+          <div class="col-12">
+            <label class="form-label">Server-Pfad</label>
+            <input name="server_folder" type="text" class="form-control" placeholder="/data/ot_runs/20230726" required>
+          </div>
+          <div class="col-12">
+            <button type="submit" class="btn btn-primary">Ordner setzen</button>
+          </div>
+        </form>
+
+        {% if server_folder %}
+          <hr class="my-4">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="chip"><strong>Gewählt:</strong> <span class="truncate" style="max-width:420px">{{ server_folder }}</span></span>
+            <span class="badge bg-secondary">{{ server_files|length }} Datei(en)</span>
+          </div>
+
+          <!-- Start Batch (Server) -->
+          <form action="{{ url_for('start_run') }}" method="post" class="row gy-3 gx-3 align-items-end mt-2">
+            <input type="hidden" name="source" value="server">
+            <input type="hidden" name="server_folder" value="{{ server_folder }}">
+
+            <div class="col-4">
+              <label class="form-label">Datentyp</label>
+              <select name="kind" class="form-select">
+                <option value="HF">HF</option>
+                <option value="LF">LF</option>
+                <option value="CSV">CSV</option>
+              </select>
+            </div>
+
+            <!-- Downsampling -->
+            <div class="col-4">
+              <label class="form-label">Downsampling</label>
+              <div class="input-group">
+                <input name="downsample" type="number" class="form-control" inputmode="numeric" min="1" step="1" placeholder="z. B. 5">
+                <span class="input-group-text">×</span>
+              </div>
+              <div class="form-text">Leer = Standard des Profils (POTATO).</div>
+            </div>
+
+            <!-- NEU: Modell -->
+            <div class="col-4">
+              <label class="form-label">Modell</label>
+              <select name="model" class="form-select">
+                <option value="WLC+WLC">WLC+WLC</option>
+                <option value="WLC+FJC">WLC+FJC</option>
+              </select>
+            </div>
+
+            <div class="col-12">
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" name="multi" id="s_multi">
+                <label class="form-check-label" for="s_multi">MultiH5 erkennen</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" name="trap1" id="s_trap1" checked>
+                <label class="form-check-label" for="s_trap1">Trap 1×</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" name="len_um" id="s_lenum" checked>
+                <label class="form-check-label" for="s_lenum">CSV-Länge in µm</label>
+              </div>
+            </div>
+
+            <div class="col-12 d-grid">
+              <button type="submit" class="btn btn-success">Analyse (Server-Ordner) starten</button>
+            </div>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </aside>
+
+  <!-- Option B -->
+  <aside class="col-lg-6">
+    <div class="card card-glass h-100">
+      <div class="card-body">
+        <h3 class="h5 mb-2">Option B · Lokaler Ordner (File System Access API)</h3>
+        <p class="text-muted">Wähle einen lokalen Ordner. Dateien werden <em>parallel</em> hochgeladen.</p>
+        <button id="pick" class="btn btn-secondary">Ordner auswählen &amp; hochladen</button>
+        <progress id="prog" max="1" value="0" class="w-100 mt-3" style="display:none;"></progress>
+        <div id="status" class="mt-2 small"></div>
+
+        <!-- Start Batch (Upload) -->
+        <form id="startLocal" action="{{ url_for('start_run') }}" method="post" class="row gy-3 gx-3 align-items-end mt-3" style="display:none;">
+          <input type="hidden" name="source" value="upload">
+
+          <div class="col-4">
+            <label class="form-label">Datentyp</label>
+            <select name="kind" class="form-select">
+              <option value="HF">HF</option>
+              <option value="LF">LF</option>
+              <option value="CSV">CSV</option>
+            </select>
+          </div>
+
+          <!-- Downsampling -->
+          <div class="col-4">
+            <label class="form-label">Downsampling</label>
+            <div class="input-group">
+              <input name="downsample" type="number" class="form-control" inputmode="numeric" min="1" step="1" placeholder="z. B. 5">
+              <span class="input-group-text">×</span>
+            </div>
+            <div class="form-text">Leer = Standard des Profils (POTATO).</div>
+          </div>
+
+          <!-- NEU: Modell -->
+          <div class="col-4">
+            <label class="form-label">Modell</label>
+            <select name="model" class="form-select">
+              <option value="WLC+WLC">WLC+WLC</option>
+              <option value="WLC+FJC">WLC+FJC</option>
+            </select>
+          </div>
+
+          <div class="col-12">
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" name="multi" id="u_multi">
+              <label class="form-check-label" for="u_multi">MultiH5 erkennen</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" name="trap1" id="u_trap1" checked>
+              <label class="form-check-label" for="u_trap1">Trap 1×</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" name="len_um" id="u_lenum" checked>
+              <label class="form-check-label" for="u_lenum">CSV-Länge in µm</label>
+            </div>
+          </div>
+
+          <div class="col-12 d-grid">
+            <button type="submit" class="btn btn-success">Analyse (hochgeladene Dateien) starten</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<hr class="my-4">
+
+<div class="card card-glass">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <div><strong>Manuelle Analyse (TOMATO):</strong> Interaktive FD-Kurve mit Plotly, Klick-Steps &amp; Fits.</div>
+      <a class="btn btn-outline-primary" href="{{ url_for('tomato_page') }}">TOMATO öffnen</a>
+    </div>
+  </div>
+</div>
+
+<div class="card card-glass mt-4">
+  <div class="card-body">
+    <h3 class="h5 mb-3">Aktive Jobs</h3>
+    <ul class="list-group list-group-flush">
+      {% for jid, j in jobs.items() %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <span><a href="{{ url_for('job_view', job_id=jid) }}" class="link-underline-opacity-0">{{ jid }}</a></span>
+          <span class="badge bg-{{ 'success' if j.done else 'primary' }}">{{ 'fertig' if j.done else 'läuft' }}</span>
+        </li>
+      {% endfor %}
+      {% if not jobs %}
+        <li class="list-group-item">Keine</li>
+      {% endif %}
+    </ul>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

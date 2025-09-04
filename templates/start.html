@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}AVOCADO Suite — Start{% endblock %}
+
+{% block content %}
+<h1 class="section-title h3 mb-4">Wähle ein Modul</h1>
+
+<div class="row g-4">
+  <!-- AVOCADO -->
+  <div class="col-12 col-md-6 col-lg-4">
+    <div class="card card-glass h-100 text-center app-card">
+      <div class="card-body p-4">
+        <a href="{{ url_for('avocado') }}" class="text-decoration-none text-reset stretched-link">
+          <img src="{{ url_for('static', filename='start_avocado.png') }}" alt="AVOCADO" class="app-logo mb-3">
+          <h3 class="h5 mb-2">AVOCADO</h3>
+          <p class="text-muted mb-0">Batch-Analyse &amp; Jobs — POTATO-basierte Auswertung mit schickem Frontend.</p>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOMATO -->
+  <div class="col-12 col-md-6 col-lg-4">
+    <div class="card card-glass h-100 text-center app-card">
+      <div class="card-body p-4">
+        <a href="{{ url_for('tomato_page') }}" class="text-decoration-none text-reset stretched-link">
+          <img src="{{ url_for('static', filename='start_tomato.png') }}" alt="TOMATO" class="app-logo tomato-logo mb-3">
+          <h3 class="h5 mb-2">TOMATO</h3>
+          <p class="text-muted mb-0">Manuelle FD-Analyse — Klick-Steps, Fits, Export ins OT-Schema.</p>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- CARROT -->
+  <div class="col-12 col-md-6 col-lg-4">
+    <div class="card card-glass h-100 text-center app-card">
+      <div class="card-body p-4">
+        <a href="{{ url_for('ot_page') }}" class="text-decoration-none text-reset stretched-link">
+          <img src="{{ url_for('static', filename='start_carrot.png') }}" alt="CARROT" class="app-logo mb-3">
+          <h3 class="h5 mb-2">CARROT</h3>
+          <p class="text-muted mb-0">OT-Auswertung aus Excel — ΔLc berechnen &amp; Plots ins Workbook einbetten.</p>
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .app-card { 
+    transition: transform .15s ease, box-shadow .15s ease; 
+  }
+  .app-card:hover { 
+    transform: translateY(-2px); 
+    box-shadow: 0 14px 35px rgba(0,0,0,.12); 
+  }
+
+  /* Generelle Logo-Größe */
+  .app-logo {
+    width: clamp(120px, 16vw, 200px);
+    height: auto;
+    image-rendering: -webkit-optimize-contrast;
+  }
+
+  /* TOMATO-Logo etwas größer */
+  .tomato-logo {
+    
+    width: clamp(200px, 20vw, 300px);
+  }
+</style>
+{% endblock %}

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}AVOCADO — {{ job_id }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="h4 m-0">Job: {{ job_id }}</h2>
+  <div class="d-flex gap-2">
+    <a class="btn btn-soft btn-sm" href="{{ url_for('avocado') }}">Zurück</a>
+    <a class="btn btn-outline-success btn-sm" href="{{ url_for('job_download_zip', job_id=job_id) }}">Alles als ZIP</a>
+
+    {# PDF-Report: Toolbar-Button – nur wenn Job fertig und kein Fehler #}
+    {% if job.done and not job.error %}
+      <a class="btn btn-primary btn-sm"
+         href="{{ url_for('job_report_pdf', job_id=job_id) }}">
+        📄 PDF-Report
+      </a>
+    {% else %}
+      <button class="btn btn-primary btn-sm" disabled title="Der Report ist erst nach Abschluss verfügbar">
+        📄 PDF-Report
+      </button>
+    {% endif %}
+
+    <button id="copyLogs" class="btn btn-outline-secondary btn-sm">Logs kopieren</button>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card card-glass h-100">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h3 class="h6 m-0">Logs</h3>
+          <span id="stateBadge" class="badge bg-{{ 'success' if job.done else 'primary' }}">
+            {{ 'fertig' if job.done else 'läuft' }}
+          </span>
+        </div>
+        <div id="logs" class="logbox mono">
+          {% for line in job.logs %}
+            <div>{{ line | e }}</div>
+          {% endfor %}
+        </div>
+        {% if job.error %}
+          <div class="alert alert-danger mt-3">
+            <strong>Fehler:</strong>
+            <span class="mono small">{{ job.error }}</span>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card card-glass h-100">
+      <div class="card-body">
+        <h3 class="h6 mb-3">Ausgabedateien</h3>
+
+        {# PDF-Report: großer Button im Ausgabebereich #}
+        {% if job.done and not job.error %}
+          <div class="mb-3">
+            <a class="btn btn-primary w-100"
+               href="{{ url_for('job_report_pdf', job_id=job_id) }}">
+              📄 PDF-Report herunterladen
+            </a>
+          </div>
+        {% endif %}
+
+        {% if out_files %}
+          <ul class="list-group list-group-flush">
+          {% for f in out_files %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <span class="mono truncate" title="{{ f }}">{{ f }}</span>
+              <a class="btn btn-sm btn-outline-success"
+                 href="{{ url_for('job_download', job_id=job_id, filename=f) }}">
+                Download
+              </a>
+            </li>
+          {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted">Noch keine Dateien vorhanden.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function poll() {
+  try {
+    const r = await fetch("{{ url_for('job_status', job_id=job_id) }}");
+    if (!r.ok) return;
+    const js = await r.json();
+
+    const logs = document.getElementById("logs");
+    if (js.new_logs && js.new_logs.length) {
+      const scrolledToEnd = logs.scrollTop + logs.clientHeight >= logs.scrollHeight - 4;
+      js.new_logs.forEach(line => {
+        const div = document.createElement("div");
+        div.textContent = line;
+        logs.appendChild(div);
+      });
+      if (scrolledToEnd) logs.scrollTop = logs.scrollHeight;
+    }
+
+    if (js.error) {
+      const state = document.getElementById("stateBadge");
+      state.className = "badge bg-danger";
+      state.textContent = "Fehler";
+      return;
+    }
+
+    if (!js.done) {
+      setTimeout(poll, 1500);
+    } else {
+      const state = document.getElementById("stateBadge");
+      state.className = "badge bg-success";
+      state.textContent = "fertig";
+
+      // Nach Abschluss die Seite noch einmal laden,
+      // damit die PDF-Buttons aktiv werden und evtl. neue Dateien angezeigt werden.
+      setTimeout(() => location.reload(), 800);
+    }
+  } catch (e) { console.error(e); }
+}
+{% if not job.done %}poll();{% endif %}
+
+document.getElementById("copyLogs")?.addEventListener("click", async ()=>{
+  const text = [...document.querySelectorAll("#logs > div")].map(d=>d.textContent).join("\n");
+  try { await navigator.clipboard.writeText(text); } catch {}
+});
+</script>
+{% endblock %}

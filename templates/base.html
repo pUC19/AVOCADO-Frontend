@@ -1,0 +1,132 @@
+<html lang="de" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AVOCADO{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
+  <style>
+    :root{
+      --radius: 16px;
+      --shadow: 0 10px 30px rgba(0,0,0,.06), 0 2px 6px rgba(0,0,0,.05);
+      --card-bg: color-mix(in oklab, var(--bs-body-bg), transparent 10%);
+    }
+    [data-bs-theme="dark"]{
+      --shadow: 0 10px 30px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.25);
+      --card-bg: color-mix(in oklab, var(--bs-body-bg), white 4%);
+    }
+    body{
+      background:
+        radial-gradient(1000px 600px at 10% -10%, rgba(99,102,241,.18), transparent 40%),
+        radial-gradient(800px 500px at 90% 10%, rgba(14,165,233,.18), transparent 40%),
+        linear-gradient(to bottom, var(--bs-body-bg), var(--bs-body-bg));
+      background-attachment: fixed;
+    }
+    .navbar-blur{
+      backdrop-filter: saturate(140%) blur(10px);
+      background: color-mix(in oklab, var(--bs-body-bg), transparent 20%) !important;
+      border-bottom: 1px solid color-mix(in oklab, var(--bs-body-color), transparent 90%);
+    }
+    .card-glass{
+      background: var(--card-bg);
+      border: 1px solid color-mix(in oklab, var(--bs-body-color), transparent 90%);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .mono{ font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace; }
+    .logbox{ height: 300px; overflow:auto; border-radius: 12px; background: #0b1020; color:#a7f3d0; padding:.75rem; }
+    .chip{
+      display:inline-flex; align-items:center; gap:.5rem;
+      padding:.35rem .6rem; border-radius:999px;
+      border:1px solid color-mix(in oklab, var(--bs-body-color), transparent 85%);
+      background: color-mix(in oklab, var(--bs-body-bg), transparent 10%);
+      font-size:.875rem;
+    }
+    .truncate{ max-width: 100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .plot-wrap{ height: clamp(360px, 60vh, 680px); }
+    .sticky-actions{
+      position: sticky; bottom: 0; z-index: 5;
+      background: color-mix(in oklab, var(--bs-body-bg), transparent 5%);
+      backdrop-filter: blur(6px);
+      border-top: 1px solid color-mix(in oklab, var(--bs-body-color), transparent 90%);
+      padding: .75rem;
+      border-bottom-left-radius: var(--radius);
+      border-bottom-right-radius: var(--radius);
+    }
+    .btn-soft{
+      border:1px solid color-mix(in oklab, var(--bs-body-color), transparent 85%);
+      background: color-mix(in oklab, var(--bs-body-bg), transparent 6%);
+    }
+    .btn-soft:hover{ background: color-mix(in oklab, var(--bs-body-bg), transparent 0%); }
+    .section-title{ letter-spacing:.3px }
+    .toast-container { z-index: 2000; }
+  </style>
+</head>
+<body class="d-flex flex-column min-vh-100">
+<nav class="navbar navbar-expand-lg navbar-blur sticky-top">
+  <div class="container-xl">
+    <a class="navbar-brand fw-semibold d-flex align-items-center" href="{{ url_for('start') }}">
+      <img src="{{ url_for('static', filename='favicon.png') }}" alt="AVOCADO" width="24" height="24" class="me-2">
+      <span>AVOCADO</span>
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div id="nav" class="collapse navbar-collapse">
+      <ul class="navbar-nav me-auto">
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('start') }}">Start</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('avocado') }}">Avocado</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('tomato_page') }}">TOMATO</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('ot_page') }}">OT-Auswertung</a></li>
+      </ul>
+      <div class="d-flex align-items-center gap-2">
+        <button id="themeToggle" class="btn btn-outline-light btn-sm" title="Theme umschalten">🌓</button>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="container-xl my-4 flex-grow-1">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="toast-container position-fixed top-0 end-0 p-3">
+        {% for category, msg in messages %}
+          <div class="toast align-items-center text-bg-{% if category=='warning' %}warning{% else %}info{% endif %} border-0 show" role="alert">
+            <div class="d-flex">
+              <div class="toast-body">{{ msg }}</div>
+              <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="border-top py-3 mt-auto">
+  <div class="container-xl small text-muted d-flex flex-wrap gap-2 justify-content-between">
+    <span>AVOCADO · Flask Frontend</span>
+    <span>© {{ 2025 }} – Made with ❤️ & Plotly/Bootstrap</span>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+{% block scripts %}{% endblock %}
+<script>
+  // Theme: follow system + remember choice
+  (function(){
+    const key = "potato-theme";
+    const saved = localStorage.getItem(key);
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const setTheme = t => document.documentElement.setAttribute('data-bs-theme', t);
+    setTheme(saved || (prefersDark ? 'dark' : 'light'));
+    document.getElementById('themeToggle')?.addEventListener('click', ()=>{
+      const cur = document.documentElement.getAttribute('data-bs-theme');
+      const next = cur === 'dark' ? 'light' : 'dark';
+      setTheme(next); localStorage.setItem(key, next);
+    });
+  })();
+</script>
+</body>
+</html>
