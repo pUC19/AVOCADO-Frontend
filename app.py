@@ -887,7 +887,7 @@ def job_report_pdf(job_id):
     analysis_folder = job.get("folder")
     if not analysis_folder or not Path(analysis_folder).exists():
         abort(404)
-    pdf_path = generate_batch_pdf(analysis_folder)  # erzeugt/überschreibt Report im Ordner
+    pdf_path, _ = generate_batch_pdf(analysis_folder)  # erzeugt/überschreibt Report im Ordner
     return send_file(pdf_path, as_attachment=True)
     
 
@@ -923,13 +923,9 @@ def tomato_upload():
         return jsonify({"error": f"read_in_data failed: {type(e).__name__}: {e}"}), 500
     if FD[0, 1] > FD[-1, 1]: FD = np.flipud(FD)
 
-    dist_offset = FD[:, 1].min()
-    FD[:, 1] = FD[:, 1] - dist_offset
-
     token = uuid.uuid4().hex
     TOMATO[token] = {
         "filename": filename, "path": str(dst), "FD": FD, "freq": float(freq),
-        "dist_offset": dist_offset,
         "settings": input_settings, "format": input_format, "fitcfg": make_input_fitting(default_values_FIT, "WLC+WLC"),
         "last_steps": None, "last_results": None
     }
@@ -966,13 +962,9 @@ def tomato_load_server_file():
         return jsonify({"error": f"read_in_data failed: {type(e).__name__}: {e}"}), 500
     if FD[0, 1] > FD[-1, 1]: FD = np.flipud(FD)
 
-    dist_offset = FD[:, 1].min()
-    FD[:, 1] = FD[:, 1] - dist_offset
-    
     token = uuid.uuid4().hex
     TOMATO[token] = {
         "filename": filename, "path": str(p), "FD": FD, "freq": float(freq),
-        "dist_offset": dist_offset,
         "settings": input_settings, "format": input_format, "fitcfg": make_input_fitting(default_values_FIT, "WLC+WLC"),
         "last_steps": None, "last_results": None
     }
@@ -1083,14 +1075,7 @@ def _run_tomato_analyze_worker(entry, steps, model, q):
     try:
         FD = entry["FD"]
         input_settings = entry["settings"]
-        
-        # Fit-Konfiguration für diesen Lauf anpassen
-        dist_offset = entry.get("dist_offset", 0.0)
-        input_fitting = entry["fitcfg"].copy()
-        input_fitting['offset_d'] = input_fitting['offset_d'] - dist_offset
-        input_fitting['offset_d_low'] = input_fitting['offset_d_low'] - dist_offset
-        input_fitting['offset_d_up'] = input_fitting['offset_d_up'] - dist_offset
-        
+        input_fitting  = entry["fitcfg"]
         input_fitting = {**input_fitting,
                          "WLC+WLC": 1 if model=="WLC+WLC" else 0,
                          "WLC+FJC": 1 if model=="WLC+FJC" else 0}
@@ -1186,7 +1171,6 @@ def tomato_analyze_start():
     entry_for_worker = {
         "filename": src["filename"],
         "FD":       src["FD"],
-        "dist_offset": src.get("dist_offset", 0.0),
         "settings": src["settings"],
         "fitcfg":   src["fitcfg"],
     }
@@ -1416,3 +1400,4 @@ def _default_settings(kind="HF", trap1=True, len_um=True):
 if __name__ == "__main__":
     # Unter Windows reloader=False setzen, wenn multiprocessing genutzt wird
     app.run(debug=True, use_reloader=False)
+
