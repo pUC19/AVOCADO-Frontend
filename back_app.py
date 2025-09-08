@@ -887,7 +887,7 @@ def job_report_pdf(job_id):
     analysis_folder = job.get("folder")
     if not analysis_folder or not Path(analysis_folder).exists():
         abort(404)
-    pdf_path = generate_batch_pdf(analysis_folder)  # erzeugt/überschreibt Report im Ordner
+    pdf_path, _ = generate_batch_pdf(analysis_folder)  # erzeugt/überschreibt Report im Ordner
     return send_file(pdf_path, as_attachment=True)
     
 

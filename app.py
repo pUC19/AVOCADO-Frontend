@@ -805,7 +805,37 @@ def start_run():
     input_format   = make_input_format(kind=kind, trap1=trap1, length_um=len_um, preprocess=True, multi=multi, augment=False)
     model = request.form.get("model", "WLC+WLC")
     model = model if model in ("WLC+WLC", "WLC+FJC") else "WLC+WLC"
-    input_fitting = make_input_fitting(default_values_FIT, model=model)
+    
+    # ##################################################################
+    # HIER BEGINNT DER ANGEPASSTE CODEBLOCK
+    # ##################################################################
+    
+    # Kopie der Standard-Fit-Parameter erstellen, um sie nicht global zu ändern
+    fit_params = default_values_FIT.copy()
+
+    # Auswahl der Persistenzlänge aus dem Formular auslesen
+    lp_choice = request.form.get("lp_ds_choice", "default")
+    if lp_choice == "50":
+        fit_params['Persistance-Length ds, nm'] = '50'
+    elif lp_choice == "40":
+        fit_params['Persistance-Length ds, nm'] = '40'
+    
+    # Auswahl der Konturlänge aus dem Formular auslesen
+    lc_choice = request.form.get("lc_ds_choice", "default")
+    if lc_choice == "1700":
+        fit_params['Contour-Length ds, nm'] = '1700' # 1.7 µm
+    elif lc_choice == "714":
+        fit_params['Contour-Length ds, nm'] = '714'  # 0.714 µm
+    elif lc_choice == "3400":
+        fit_params['Contour-Length ds, nm'] = '3400' # 3.4 µm
+
+    # Fit-Einstellungen mit den potenziell geänderten Parametern erstellen
+    input_fitting = make_input_fitting(fit_params, model=model)
+    
+    # ##################################################################
+    # HIER ENDET DER ANGEPASSTE CODEBLOCK
+    # ##################################################################
+    
     export_data   = make_export_flags(True, True, True, True, True)
 
     if source == "server":
@@ -887,7 +917,7 @@ def job_report_pdf(job_id):
     analysis_folder = job.get("folder")
     if not analysis_folder or not Path(analysis_folder).exists():
         abort(404)
-    pdf_path = generate_batch_pdf(analysis_folder)  # erzeugt/überschreibt Report im Ordner
+    pdf_path, _ = generate_batch_pdf(analysis_folder)  # erzeugt/überschreibt Report im Ordner
     return send_file(pdf_path, as_attachment=True)
     
 
@@ -923,13 +953,9 @@ def tomato_upload():
         return jsonify({"error": f"read_in_data failed: {type(e).__name__}: {e}"}), 500
     if FD[0, 1] > FD[-1, 1]: FD = np.flipud(FD)
 
-    dist_offset = FD[:, 1].min()
-    FD[:, 1] = FD[:, 1] - dist_offset
-
     token = uuid.uuid4().hex
     TOMATO[token] = {
         "filename": filename, "path": str(dst), "FD": FD, "freq": float(freq),
-        "dist_offset": dist_offset,
         "settings": input_settings, "format": input_format, "fitcfg": make_input_fitting(default_values_FIT, "WLC+WLC"),
         "last_steps": None, "last_results": None
     }
@@ -966,13 +992,9 @@ def tomato_load_server_file():
         return jsonify({"error": f"read_in_data failed: {type(e).__name__}: {e}"}), 500
     if FD[0, 1] > FD[-1, 1]: FD = np.flipud(FD)
 
-    dist_offset = FD[:, 1].min()
-    FD[:, 1] = FD[:, 1] - dist_offset
-    
     token = uuid.uuid4().hex
     TOMATO[token] = {
         "filename": filename, "path": str(p), "FD": FD, "freq": float(freq),
-        "dist_offset": dist_offset,
         "settings": input_settings, "format": input_format, "fitcfg": make_input_fitting(default_values_FIT, "WLC+WLC"),
         "last_steps": None, "last_results": None
     }
@@ -1083,14 +1105,7 @@ def _run_tomato_analyze_worker(entry, steps, model, q):
     try:
         FD = entry["FD"]
         input_settings = entry["settings"]
-        
-        # Fit-Konfiguration für diesen Lauf anpassen
-        dist_offset = entry.get("dist_offset", 0.0)
-        input_fitting = entry["fitcfg"].copy()
-        input_fitting['offset_d'] = input_fitting['offset_d'] - dist_offset
-        input_fitting['offset_d_low'] = input_fitting['offset_d_low'] - dist_offset
-        input_fitting['offset_d_up'] = input_fitting['offset_d_up'] - dist_offset
-        
+        input_fitting  = entry["fitcfg"]
         input_fitting = {**input_fitting,
                          "WLC+WLC": 1 if model=="WLC+WLC" else 0,
                          "WLC+FJC": 1 if model=="WLC+FJC" else 0}
@@ -1186,7 +1201,6 @@ def tomato_analyze_start():
     entry_for_worker = {
         "filename": src["filename"],
         "FD":       src["FD"],
-        "dist_offset": src.get("dist_offset", 0.0),
         "settings": src["settings"],
         "fitcfg":   src["fitcfg"],
     }

@@ -1,4 +1,4 @@
-# batch_report.py — AVOCADO Batch Report (finale, robuste Version 5)
+# batch_report.py — AVOCADO Batch Report (Version 8 - Ohne Download)
 from __future__ import annotations
 
 import re
@@ -275,7 +275,90 @@ def kdeplot_filled(ax, data, label: str, color: str, lw: float = 1.6, alpha: flo
     y_scatter = np.interp(arr, xs_p, ys_p)
     ax.scatter(arr, y_scatter, color=color, s=15, alpha=0.8, zorder=5, edgecolor='black', linewidth=0.3)
     
-    return xs, ys # Gibt die *originale*, ungepaddete Dichtekurve zurück
+    return xs, ys
+
+# ==================================================
+#   FUNKTIONEN FÜR GRAPHPAD-EXPORT
+# ==================================================
+def _calculate_average_curve(curves: List[Tuple[np.ndarray, np.ndarray, str]], direction: str) -> Optional[pd.DataFrame]:
+    """Berechnet eine mediane FD-Kurve aus einer Liste von Kurven."""
+    target_curves = [c for c in curves if c[2] == direction]
+    if len(target_curves) < 3:
+        return None
+
+    all_x = np.concatenate([c[0] for c in target_curves])
+    x_min, x_max = np.percentile(all_x, [5, 95])
+    x_grid = np.linspace(x_min, x_max, 500)
+
+    interpolated_ys = []
+    for x, y, _ in target_curves:
+        if x[0] <= x_max and x[-1] >= x_min:
+            y_interp = np.interp(x_grid, x, y, left=np.nan, right=np.nan)
+            interpolated_ys.append(y_interp)
+
+    if not interpolated_ys:
+        return None
+
+    y_matrix = np.vstack(interpolated_ys)
+    nan_mask = np.sum(np.isnan(y_matrix), axis=0) < (len(y_matrix) * 0.5)
+    x_grid = x_grid[nan_mask]
+    y_matrix = y_matrix[:, nan_mask]
+
+    if x_grid.size == 0:
+        return None
+
+    median_y = np.nanmedian(y_matrix, axis=0)
+    q1_y = np.nanpercentile(y_matrix, 25, axis=0)
+    q3_y = np.nanpercentile(y_matrix, 75, axis=0)
+    
+    return pd.DataFrame({
+        f"Distance_{direction} (nm)": x_grid,
+        f"Median_Force_{direction} (pN)": median_y,
+        f"Q1_Force_{direction} (pN)": q1_y,
+        f"Q3_Force_{direction} (pN)": q3_y,
+    })
+
+def generate_graphpad_file(
+    df: pd.DataFrame,
+    curves: List[Tuple[np.ndarray, np.ndarray, str]],
+    pdf_densities: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    analysis_folder: Path,
+    ts: str
+) -> str:
+    """Erstellt eine CSV-Datei, die für GraphPad Prism optimiert ist."""
+    graphpad_parts = []
+
+    for name, data in pdf_densities.items():
+        if data:
+            xs, ys = data
+            min_len = min(len(xs), len(ys))
+            if min_len > 0:
+                xs, ys = xs[:min_len], ys[:min_len]
+                graphpad_parts.append(pd.DataFrame({f"Density_{name}_X": xs, f"Density_{name}_Y": ys}))
+
+    for direction in ["unfolding", "refolding"]:
+        subset = df[df["Direction"] == direction]
+        if not subset.empty:
+            scatter_df = subset[["Delta Lc abs (nm)", "mean force [pN]"]].copy()
+            scatter_df.columns = [f"Scatter_dLc_{direction} (nm)", f"Scatter_Force_{direction} (pN)"]
+            scatter_df.reset_index(drop=True, inplace=True)
+            graphpad_parts.append(scatter_df)
+            
+    for direction in ["unfolding", "refolding"]:
+        avg_curve_df = _calculate_average_curve(curves, direction)
+        if avg_curve_df is not None:
+            graphpad_parts.append(avg_curve_df)
+
+    if not graphpad_parts:
+        return ""
+
+    final_df = pd.concat(graphpad_parts, axis=1)
+
+    out_name = f"GraphPad_Data_{ts.replace(':', '-').replace(' ', '_')}.csv"
+    out_path = str(analysis_folder / out_name)
+    final_df.to_csv(out_path, index=False, sep=",")
+    
+    return out_path
 
 # =========================
 #   SUMMARY & INTERPRET
@@ -442,7 +525,6 @@ def _plot_example_curves(pdf: PdfPages, curves: list, num_examples: int = 3):
     fig.suptitle("Beispielhafte FD-Kurven", fontsize=12, weight='bold')
 
     for i in range(num_examples):
-        # Unfolding examples
         ax = axs[0, i]
         if i < len(unf_curves):
             x, y, _ = random.choice(unf_curves)
@@ -451,7 +533,6 @@ def _plot_example_curves(pdf: PdfPages, curves: list, num_examples: int = 3):
         ax.grid(alpha=GRID_ALPHA)
         if i == 0: ax.set_ylabel("Force (pN)")
 
-        # Refolding examples
         ax = axs[1, i]
         if i < len(ref_curves):
             x, y, _ = random.choice(ref_curves)
@@ -463,7 +544,8 @@ def _plot_example_curves(pdf: PdfPages, curves: list, num_examples: int = 3):
 
     pdf.savefig(fig); plt.close(fig)
 
-def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = None) -> str:
+def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = None) -> Tuple[str, str]:
+    """Erzeugt den PDF-Bericht und die GraphPad-CSV-Datei. Gibt Pfade zu beiden zurück."""
     folder = Path(analysis_folder)
     df = _collect_batch_results(folder)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -474,63 +556,60 @@ def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = No
     p_values = _perform_statistical_tests(df)
     has_work_data = "Work [pN*nm]" in df.columns and df["Work [pN*nm]"].notna().sum() > 10
 
+    pdf_densities = {}
+    curves = []
+
     with PdfPages(out_path) as pdf:
-        # Seite 1: Dichte-Verteilungen
         num_plots = 3 if has_work_data else 2
         fig, axs = plt.subplots(1, num_plots, figsize=(3.2 * num_plots, 3.6), constrained_layout=True)
         axs = np.atleast_1d(axs)
 
-        # Plot 1: Force
         ax = axs[0]; ax.grid(alpha=GRID_ALPHA); ax.set_title("PDF: Force")
         ref_force = df.loc[df["Direction"] == "refolding", "mean force [pN]"].dropna()
         if len(ref_force) >= 2:
-            kdeplot_filled(ax, ref_force, "refolding", COLOR["refolding"])
+            pdf_densities["Force_refolding"] = kdeplot_filled(ax, ref_force, "refolding", COLOR["refolding"])
         unf_force = df.loc[df["Direction"] == "unfolding", "mean force [pN]"].dropna()
         if len(unf_force) >= 2:
-            kdeplot_filled(ax, unf_force, "unfolding", COLOR["unfolding"])
+            pdf_densities["Force_unfolding"] = kdeplot_filled(ax, unf_force, "unfolding", COLOR["unfolding"])
         if not df.empty and "mean force [pN]" in df.columns and not df["mean force [pN]"].dropna().empty:
             ax.set_xlim(0, max(30, df["mean force [pN]"].quantile(0.99, interpolation='higher')))
         ax.set_ylim(bottom=0); ax.set_xlabel("Force (pN)"); ax.set_ylabel("Probability"); ax.legend()
         
-        # Plot 2: |ΔLc| mit Peak-Erkennung
         ax = axs[1]; ax.grid(alpha=GRID_ALPHA); ax.set_title("PDF: |ΔLc| mit Peaks")
         for direction in ["refolding", "unfolding"]:
             data = df.loc[df["Direction"] == direction, "Delta Lc abs (nm)"].dropna()
             if len(data) < 2: continue
             
-            # ### KORRIGIERTE LOGIK FÜR PEAK-ERKENNUNG ###
             density_data = kdeplot_filled(ax, data, direction, COLOR[direction])
+            pdf_densities[f"dLc_{direction}"] = density_data
             
             if find_peaks and density_data:
                 xs, ys = density_data
                 peaks, _ = find_peaks(ys, height=ys.max()*0.1, distance=10)
                 for p_idx in peaks:
-                    if p_idx < len(xs): # Sicherheitsprüfung
+                    if p_idx < len(xs):
                         ax.axvline(xs[p_idx], color=COLOR[direction], ls='--', alpha=0.8, lw=1)
                         ax.text(xs[p_idx], ys[p_idx], f' {xs[p_idx]:.1f}', color=COLOR[direction], va='bottom', ha='center', fontsize=8)
 
         if not df.empty and "Delta Lc abs (nm)" in df.columns and not df["Delta Lc abs (nm)"].dropna().empty:
-            ax.set_xlim(0, 60) # Festes Limit wie gewünscht
+            ax.set_xlim(0, 60)
         ax.set_ylim(bottom=0); ax.set_xlabel("|ΔLc| (nm)")
         
-        # Plot 3: Work (optional)
         if has_work_data:
             ax = axs[2]; ax.grid(alpha=GRID_ALPHA); ax.set_title("PDF: Faltungsarbeit")
             ref_work = df.loc[df["Direction"] == "refolding", "Work [pN*nm]"].dropna()
             if len(ref_work) >= 2:
-                kdeplot_filled(ax, ref_work, "refolding", COLOR["refolding"])
+                pdf_densities["Work_refolding"] = kdeplot_filled(ax, ref_work, "refolding", COLOR["refolding"])
             unf_work = df.loc[df["Direction"] == "unfolding", "Work [pN*nm]"].dropna()
             if len(unf_work) >= 2:
-                kdeplot_filled(ax, unf_work, "unfolding", COLOR["unfolding"])
+                pdf_densities["Work_unfolding"] = kdeplot_filled(ax, unf_work, "unfolding", COLOR["unfolding"])
             if not df["Work [pN*nm]"].dropna().empty:
                 ax.set_xlim(0, df["Work [pN*nm]"].quantile(0.99, interpolation='higher'))
             ax.set_ylim(bottom=0); ax.set_xlabel("Work (pN*nm)")
         pdf.savefig(fig); plt.close(fig)
 
-        # Seiten 2 & 3: Kurven-Plots
         curves = _collect_fd_curves(folder, max_curves=2000)
         if curves:
-            # Overlay
             fig = plt.figure(figsize=(6.5, 5.2), constrained_layout=True)
             ax = plt.gca(); ax.grid(alpha=GRID_ALPHA)
             n_ref = sum(1 for _, _, d in curves if d == "refolding")
@@ -543,10 +622,8 @@ def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = No
             ax.set_xlabel("Relative distance (nm)"); ax.set_ylabel("Force (pN)")
             ax.set_title("Overlay aller geglätteten FD-Kurven"); ax.legend(loc="upper left")
             pdf.savefig(fig); plt.close(fig)
-            # Beispiele
             _plot_example_curves(pdf, curves)
 
-        # Seite 4: Scatter-Plot
         plot_df = df.dropna(subset=["mean force [pN]", "Delta Lc abs (nm)", "Direction"])
         if not plot_df.empty:
             fig, ax = plt.subplots(figsize=(6.5, 5.2), constrained_layout=True)
@@ -559,7 +636,6 @@ def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = No
             ax.set_title("Scatter-Plot: Force vs. |ΔLc|"); ax.legend(title="Direction")
             pdf.savefig(fig); plt.close(fig)
 
-        # Seite 5: Summary-Tabelle
         if not df.empty:
             keytab = _aggregate_key_table(df)
             fig = plt.figure(figsize=(7.5, 5.0))
@@ -570,7 +646,6 @@ def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = No
             fig.tight_layout(pad=1.5) 
             pdf.savefig(fig); plt.close(fig)
         
-        # Seite 6: Interpretation
         if not df.empty:
             interpretation_text = _generate_interpretation(df, p_values)
             fig = plt.figure(figsize=(7, 9.0), constrained_layout=True)
@@ -579,7 +654,9 @@ def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = No
             fig.tight_layout(pad=1.5)
             pdf.savefig(fig); plt.close(fig)
 
-    return out_path
+    gp_path = generate_graphpad_file(df, curves, pdf_densities, folder, datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+
+    return out_path, gp_path
 
 # =========================
 #   BATCH AGGREGATION
@@ -628,8 +705,9 @@ def _collect_batch_results(analysis_folder: Path) -> pd.DataFrame:
 def _run_batch(job_id: str, folder: str):
     try:
         JOBS[job_id]["status"] = "running"
-        pdf_path = generate_batch_pdf(folder)
+        pdf_path, gp_path = generate_batch_pdf(folder)
         JOBS[job_id]["pdf_path"] = pdf_path
+        JOBS[job_id]["graphpad_path"] = gp_path
         JOBS[job_id]["done"] = True
         JOBS[job_id]["status"] = "done"
     except Exception as e:
@@ -646,7 +724,7 @@ def start_batch():
     job_id = uuid.uuid4().hex[:12]
     JOBS[job_id] = {
         "id": job_id, "folder": folder, "created": datetime.now().isoformat(timespec="seconds"),
-        "status": "queued", "done": False, "error": None, "pdf_path": None,
+        "status": "queued", "done": False, "error": None, "pdf_path": None, "graphpad_path": None
     }
     threading.Thread(target=_run_batch, args=(job_id, folder), daemon=True).start()
     return jsonify({"job_id": job_id, "status": "queued"})
@@ -655,10 +733,12 @@ def start_batch():
 def job_status(job_id):
     job = JOBS.get(job_id)
     if not job: return jsonify({"error": "job not found"}), 404
-    resp = {k: v for k, v in job.items() if k != "pdf_path"}
+    resp = {k: v for k, v in job.items() if k not in ("pdf_path", "graphpad_path")}
     resp["report_ready"] = bool(job.get("done") and job.get("pdf_path"))
+    resp["graphpad_data_ready"] = bool(job.get("done") and job.get("graphpad_path"))
     return jsonify(resp)
 
+# ##### MODIFIZIERTER BLOCK: Kein Download mehr, nur noch Pfad-Anzeige #####
 @report_bp.get("/job/<job_id>/report.pdf")
 def job_report_pdf(job_id):
     job = JOBS.get(job_id)
@@ -668,4 +748,21 @@ def job_report_pdf(job_id):
     pdf_path = Path(job["pdf_path"])
     if not pdf_path.exists():
         return jsonify({"error": "report missing on disk"}), 410
-    return send_file(pdf_path, as_attachment=True)
+    
+    return send_file(pdf_path, as_attachment=True, download_name="Batch_Report.pdf")
+
+@report_bp.get("/job/<job_id>/report.csv")
+def job_report_csv(job_id):
+    job = JOBS.get(job_id)
+    if not job: abort(404)
+    if not job.get("done") or not job.get("graphpad_path"):
+        return jsonify({"error": "graphpad data not ready"}), 400
+    gp_path = Path(job["graphpad_path"])
+    if not gp_path.exists():
+        return jsonify({"error": "graphpad data missing on disk"}), 410
+    
+    return jsonify({
+        "status": "success",
+        "message": "GraphPad CSV created successfully. Please open the file directly.",
+        "path": job["graphpad_path"]
+    })

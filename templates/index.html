@@ -8,7 +8,6 @@
 </div>
 
 <div class="row g-4">
-  <!-- Option A -->
   <aside class="col-lg-6">
     <div class="card card-glass h-100">
       <div class="card-body">
@@ -32,7 +31,6 @@
             <span class="badge bg-secondary">{{ server_files|length }} Datei(en)</span>
           </div>
 
-          <!-- Start Batch (Server) -->
           <form action="{{ url_for('start_run') }}" method="post" class="row gy-3 gx-3 align-items-end mt-2">
             <input type="hidden" name="source" value="server">
             <input type="hidden" name="server_folder" value="{{ server_folder }}">
@@ -46,7 +44,6 @@
               </select>
             </div>
 
-            <!-- Downsampling -->
             <div class="col-4">
               <label class="form-label">Downsampling</label>
               <div class="input-group">
@@ -56,7 +53,6 @@
               <div class="form-text">Leer = Standard des Profils (POTATO).</div>
             </div>
 
-            <!-- NEU: Modell -->
             <div class="col-4">
               <label class="form-label">Modell</label>
               <select name="model" class="form-select">
@@ -65,6 +61,23 @@
               </select>
             </div>
 
+            <div class="col-6">
+                <label for="s_lp_ds_choice" class="form-label">Persistenzlänge</label>
+                <select class="form-select" id="s_lp_ds_choice" name="lp_ds_choice">
+                    <option value="default" selected>Standard (aus Config)</option>
+                    <option value="50">50 nm (150mM KCl)</option>
+                    <option value="40">40 nm (300mM KCl)</option>
+                </select>
+            </div>
+            <div class="col-6">
+                <label for="s_lc_ds_choice" class="form-label">Konturlänge</label>
+                <select class="form-select" id="s_lc_ds_choice" name="lc_ds_choice">
+                    <option value="default" selected>Standard (aus Config)</option>
+                    <option value="1700">1700 nm (5000 bp)</option>
+                    <option value="714">714 nm (2100 bp)</option>
+                    <option value="3400">3400 nm (10000 bp)</option>
+                </select>
+            </div>
             <div class="col-12">
               <div class="form-check form-check-inline">
                 <input class="form-check-input" type="checkbox" name="multi" id="s_multi">
@@ -89,7 +102,6 @@
     </div>
   </aside>
 
-  <!-- Option B -->
   <aside class="col-lg-6">
     <div class="card card-glass h-100">
       <div class="card-body">
@@ -99,7 +111,6 @@
         <progress id="prog" max="1" value="0" class="w-100 mt-3" style="display:none;"></progress>
         <div id="status" class="mt-2 small"></div>
 
-        <!-- Start Batch (Upload) -->
         <form id="startLocal" action="{{ url_for('start_run') }}" method="post" class="row gy-3 gx-3 align-items-end mt-3" style="display:none;">
           <input type="hidden" name="source" value="upload">
 
@@ -112,7 +123,6 @@
             </select>
           </div>
 
-          <!-- Downsampling -->
           <div class="col-4">
             <label class="form-label">Downsampling</label>
             <div class="input-group">
@@ -122,7 +132,6 @@
             <div class="form-text">Leer = Standard des Profils (POTATO).</div>
           </div>
 
-          <!-- NEU: Modell -->
           <div class="col-4">
             <label class="form-label">Modell</label>
             <select name="model" class="form-select">
@@ -131,6 +140,23 @@
             </select>
           </div>
 
+          <div class="col-6">
+              <label for="u_lp_ds_choice" class="form-label">Persistenzlänge</label>
+              <select class="form-select" id="u_lp_ds_choice" name="lp_ds_choice">
+                  <option value="default" selected>Standard (aus Config)</option>
+                  <option value="50">50 nm (150mM KCl)</option>
+                  <option value="40">40 nm (300mM KCl)</option>
+              </select>
+          </div>
+          <div class="col-6">
+              <label for="u_lc_ds_choice" class="form-label">Konturlänge</label>
+              <select class="form-select" id="u_lc_ds_choice" name="lc_ds_choice">
+                  <option value="default" selected>Standard (aus Config)</option>
+                  <option value="1700">1700 nm (5000 bp)</option>
+                  <option value="714">714 nm (2100 bp)</option>
+                  <option value="3400">3400 nm (10000 bp)</option>
+              </select>
+          </div>
           <div class="col-12">
             <div class="form-check form-check-inline">
               <input class="form-check-input" type="checkbox" name="multi" id="u_multi">
@@ -187,3 +213,4 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 {% endblock %}
+

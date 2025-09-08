@@ -1,8 +1,11 @@
 {% extends "base.html" %}
-{% block title %}POTATO — Start{% endblock %}
+{% block title %}AVOCADO — Start{% endblock %}
 {% block content %}
 
-<h1 class="section-title h3 mb-4">POTATO — Flask Frontend</h1>
+<div class="d-flex align-items-center gap-3 mb-4">
+  <img src="{{ url_for('static', filename='favicon.png') }}" alt="AVOCADO Logo" width="48" height="48" class="rounded">
+  <h1 class="section-title h3 mb-0">AVOCADO — Flask Frontend</h1>
+</div>
 
 <div class="row g-4">
   <!-- Option A -->
@@ -11,6 +14,7 @@
       <div class="card-body">
         <h3 class="h5 mb-2">Option A · Server-Ordner (kein Upload)</h3>
         <p class="text-muted mb-3">Analysiere Dateien direkt auf dem Server ( *.h5 / *.csv ).</p>
+
         <form action="{{ url_for('set_server_folder') }}" method="post" class="row g-3">
           <div class="col-12">
             <label class="form-label">Server-Pfad</label>
@@ -28,9 +32,11 @@
             <span class="badge bg-secondary">{{ server_files|length }} Datei(en)</span>
           </div>
 
+          <!-- Start Batch (Server) -->
           <form action="{{ url_for('start_run') }}" method="post" class="row gy-3 gx-3 align-items-end mt-2">
             <input type="hidden" name="source" value="server">
             <input type="hidden" name="server_folder" value="{{ server_folder }}">
+
             <div class="col-4">
               <label class="form-label">Datentyp</label>
               <select name="kind" class="form-select">
@@ -39,7 +45,27 @@
                 <option value="CSV">CSV</option>
               </select>
             </div>
-            <div class="col-8">
+
+            <!-- Downsampling -->
+            <div class="col-4">
+              <label class="form-label">Downsampling</label>
+              <div class="input-group">
+                <input name="downsample" type="number" class="form-control" inputmode="numeric" min="1" step="1" placeholder="z. B. 5">
+                <span class="input-group-text">×</span>
+              </div>
+              <div class="form-text">Leer = Standard des Profils (POTATO).</div>
+            </div>
+
+            <!-- NEU: Modell -->
+            <div class="col-4">
+              <label class="form-label">Modell</label>
+              <select name="model" class="form-select">
+                <option value="WLC+WLC">WLC+WLC</option>
+                <option value="WLC+FJC">WLC+FJC</option>
+              </select>
+            </div>
+
+            <div class="col-12">
               <div class="form-check form-check-inline">
                 <input class="form-check-input" type="checkbox" name="multi" id="s_multi">
                 <label class="form-check-label" for="s_multi">MultiH5 erkennen</label>
@@ -50,11 +76,12 @@
               </div>
               <div class="form-check form-check-inline">
                 <input class="form-check-input" type="checkbox" name="len_um" id="s_lenum" checked>
-                <label class="form-check-label" for="s_lenum">CSV‑Länge in µm</label>
+                <label class="form-check-label" for="s_lenum">CSV-Länge in µm</label>
               </div>
             </div>
+
             <div class="col-12 d-grid">
-              <button type="submit" class="btn btn-success">Analyse (Server‑Ordner) starten</button>
+              <button type="submit" class="btn btn-success">Analyse (Server-Ordner) starten</button>
             </div>
           </form>
         {% endif %}
@@ -72,8 +99,10 @@
         <progress id="prog" max="1" value="0" class="w-100 mt-3" style="display:none;"></progress>
         <div id="status" class="mt-2 small"></div>
 
+        <!-- Start Batch (Upload) -->
         <form id="startLocal" action="{{ url_for('start_run') }}" method="post" class="row gy-3 gx-3 align-items-end mt-3" style="display:none;">
           <input type="hidden" name="source" value="upload">
+
           <div class="col-4">
             <label class="form-label">Datentyp</label>
             <select name="kind" class="form-select">
@@ -82,7 +111,27 @@
               <option value="CSV">CSV</option>
             </select>
           </div>
-          <div class="col-8">
+
+          <!-- Downsampling -->
+          <div class="col-4">
+            <label class="form-label">Downsampling</label>
+            <div class="input-group">
+              <input name="downsample" type="number" class="form-control" inputmode="numeric" min="1" step="1" placeholder="z. B. 5">
+              <span class="input-group-text">×</span>
+            </div>
+            <div class="form-text">Leer = Standard des Profils (POTATO).</div>
+          </div>
+
+          <!-- NEU: Modell -->
+          <div class="col-4">
+            <label class="form-label">Modell</label>
+            <select name="model" class="form-select">
+              <option value="WLC+WLC">WLC+WLC</option>
+              <option value="WLC+FJC">WLC+FJC</option>
+            </select>
+          </div>
+
+          <div class="col-12">
             <div class="form-check form-check-inline">
               <input class="form-check-input" type="checkbox" name="multi" id="u_multi">
               <label class="form-check-label" for="u_multi">MultiH5 erkennen</label>
@@ -93,9 +142,10 @@
             </div>
             <div class="form-check form-check-inline">
               <input class="form-check-input" type="checkbox" name="len_um" id="u_lenum" checked>
-              <label class="form-check-label" for="u_lenum">CSV‑Länge in µm</label>
+              <label class="form-check-label" for="u_lenum">CSV-Länge in µm</label>
             </div>
           </div>
+
           <div class="col-12 d-grid">
             <button type="submit" class="btn btn-success">Analyse (hochgeladene Dateien) starten</button>
           </div>
@@ -110,7 +160,7 @@
 <div class="card card-glass">
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-      <div><strong>Manuelle Analyse (TOMATO):</strong> Interaktive FD‑Kurve mit Plotly, Klick‑Steps &amp; Fits.</div>
+      <div><strong>Manuelle Analyse (TOMATO):</strong> Interaktive FD-Kurve mit Plotly, Klick-Steps &amp; Fits.</div>
       <a class="btn btn-outline-primary" href="{{ url_for('tomato_page') }}">TOMATO öffnen</a>
     </div>
   </div>
