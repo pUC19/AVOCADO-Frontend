@@ -1,6 +1,6 @@
 # POTATO Frontend (Avocado · Tomato · Carrot)
 
-Flask-Webfrontend zur Analyse von Optical Tweezers Daten mit POTATO.
+Flask-Webfrontend zur Analyse von Optical Tweezers Daten mit POTATO. Erstellt von Tobias Fremter/Biochemie3 Uni Regensburg 
 
 ## Module
 
