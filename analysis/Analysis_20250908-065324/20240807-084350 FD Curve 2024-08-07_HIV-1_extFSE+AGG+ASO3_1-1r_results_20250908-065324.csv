@@ -1,7 +1,0 @@
-
-Steps found by force derivative:
-
-
-Steps found by distance derivative:
-filename,orientation,Derivative of,step #,F1,F2,Fc,step start,step end,step length
-20240807-084350 FD Curve 2024-08-07_HIV-1_extFSE+AGG+ASO3_1-1r,reverse,Distance,1,17.72725346590225,17.80757445656011,17.76741396123118,1052.624449279641,1060.5516174292334,7.927168149592262
