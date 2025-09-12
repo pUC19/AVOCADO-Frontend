@@ -1,0 +1,13 @@
+
+Steps found by force derivative:
+filename,orientation,Derivative of,step #,F1,F2,Fc,step start,step end,step length
+20240807-111755 FD Curve 2024-08-07_HIV-1_extFSE+AGG+ASO3_3-1r,reverse,Force,1,17.855997520591302,17.826345092464145,17.841171306527723,1332.083887563269,1340.9050950245703,8.821207461301356
+
+Steps found by distance derivative:
+filename,orientation,Derivative of,step #,F1,F2,Fc,step start,step end,step length
+20240807-111755 FD Curve 2024-08-07_HIV-1_extFSE+AGG+ASO3_3-1r,reverse,Distance,1,17.82436616703067,17.764323008898184,17.794344587964428,1331.8455022295295,1340.408283372499,8.56278114296947
+
+Common steps:
+filename,orientation,Derivative of,step #,F1,F2,Fc,step start,step end,step length
+20240807-111755 FD Curve 2024-08-07_HIV-1_extFSE+AGG+ASO3_3-1r,reverse,,0,,,,,,
+20240807-111755 FD Curve 2024-08-07_HIV-1_extFSE+AGG+ASO3_3-1r,reverse,Distance,1,17.82436616703067,17.764323008898184,17.794344587964428,1331.8455022295295,1340.408283372499,8.56278114296947
