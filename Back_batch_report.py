@@ -1,4 +1,5 @@
-# batch_report.py — AVOCADO Batch Report (extra-smooth densities, fixed axes, axis-anchored)
+# batch_report.py — AVOCADO Batch Report (Version 8 - Ohne Download)
+# FINALE VERSION 6: Reduzierte Tabelle
 from __future__ import annotations
 
 import re
@@ -7,6 +8,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
+import random
 
 import numpy as np
 import pandas as pd
@@ -16,22 +18,23 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from flask import Blueprint, request, jsonify, abort, send_file
 
-# ---- optional SciPy (nur für Savitzky-Golay + KDE-Peaks; Report läuft auch ohne) ----
+# ---- optionale SciPy-Abhängigkeiten ----
 try:
     from scipy.signal import savgol_filter, find_peaks
 except Exception:
     savgol_filter = None
     find_peaks = None
 try:
-    from scipy.stats import gaussian_kde
+    from scipy.stats import gaussian_kde, mannwhitneyu
 except Exception:
     gaussian_kde = None
+    mannwhitneyu = None # Platzhalter, falls SciPy nicht installiert ist
 
 report_bp = Blueprint("batch_report", __name__, url_prefix="/report")
 JOBS: Dict[str, Dict[str, Any]] = {}
 
-# Farben/Style
-COLOR = {"unfolding": "#f39c12", "refolding": "#1f77b4"}  # orange / blau
+# --- Farben mit hohem Kontrast (Rot/Blau) ---
+COLOR = {"unfolding": "#e41a1c", "refolding": "#377eb8"}
 GRID_ALPHA = 0.12
 plt.rcParams.update({
     "axes.spines.top": False,
@@ -40,18 +43,18 @@ plt.rcParams.update({
     "axes.labelsize": 10,
     "axes.titlesize": 11,
     "legend.frameon": False,
-    "figure.dpi": 300  # Erhöhte DPI für schärfere Raster-Elemente
+    "figure.dpi": 300
 })
 
-# --- KDE-Glättung (Paper-like) ---
-SMOOTH_BW_FRAC = 0.08   # 8 % der x-Spannweite als Mindest-Bandbreite (glatt!)
-SMOOTH_2ND_PASS = 1.5   # zweiter sanfter Glättungs-Pass (1.5x breiter). 0 = aus.
+# --- KDE-Glättung (Einstellung für scharfe Peaks) ---
+SMOOTH_BW_FRAC = 0.025
+SMOOTH_2ND_PASS = 0.0
 
 # =========================
 #         IO / READ
 # =========================
 def _read_table(path: Path) -> pd.DataFrame:
-    """CSV/XLSX robust lesen. '>‘-Kommentarzeile ok. Headerlos ok."""
+    """CSV/XLSX robust lesen."""
     if path.suffix.lower() == ".xlsx":
         for head in (0, None):
             try:
@@ -63,27 +66,21 @@ def _read_table(path: Path) -> pd.DataFrame:
             except Exception:
                 pass
         return pd.DataFrame()
-
     skip = 0
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            first = fh.readline()
-        if first.startswith(">"):
-            skip = 1
+            if fh.readline().startswith(">"):
+                skip = 1
     except Exception:
         pass
-
-    for kw in ({"sep": ",", "skiprows": skip},
-               {"sep": ";", "decimal": ",", "skiprows": skip}):
+    for kw in ({"sep": ",", "skiprows": skip}, {"sep": ";", "decimal": ",", "skiprows": skip}):
         try:
             df = pd.read_csv(path, **kw)
             if isinstance(df, pd.DataFrame) and not df.empty:
                 return df
         except Exception:
             pass
-
-    for kw in ({"sep": ",", "header": None, "skiprows": skip},
-               {"sep": ";", "decimal": ",", "header": None, "skiprows": skip}):
+    for kw in ({"sep": ",", "header": None, "skiprows": skip}, {"sep": ";", "decimal": ",", "header": None, "skiprows": skip}):
         try:
             df = pd.read_csv(path, **kw)
             if isinstance(df, pd.DataFrame) and not df.empty:
@@ -91,14 +88,11 @@ def _read_table(path: Path) -> pd.DataFrame:
                 return df
         except Exception:
             pass
-
     return pd.DataFrame()
-
 
 def _is_smooth_filename(p: Path) -> bool:
     n = p.name.lower()
-    return ("smooth" in n) or n.endswith("_smooth.csv") or n.endswith("-smooth.csv")
-
+    return ("smooth" in n) or n.endswith(("_smooth.csv", "-smooth.csv"))
 
 def _detect_direction_from_name(name: str) -> str:
     s = (name or "").lower()
@@ -108,7 +102,6 @@ def _detect_direction_from_name(name: str) -> str:
         return "refolding"
     return "unknown"
 
-
 def _curve_direction_from_df_or_name(df: pd.DataFrame, p: Path) -> str:
     for c in df.columns:
         cl = str(c).lower()
@@ -117,7 +110,6 @@ def _curve_direction_from_df_or_name(df: pd.DataFrame, p: Path) -> str:
             if any(k in d for k in ("unfold", "forward", "fw")): return "unfolding"
             if any(k in d for k in ("refold", "reverse", "rv")): return "refolding"
     return _detect_direction_from_name(p.name)
-
 
 # =========================
 #     FD CURVE PARSING
@@ -142,7 +134,7 @@ def _is_dist_um_like(arr: np.ndarray) -> bool:
     return (0.1 <= p1 <= 5.0) and (0.2 <= (p99 - p1) <= 20.0) and (p99 <= 50)
 
 def _read_fd_xy(df: pd.DataFrame) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """X=Distanz (nm), Y=Force (pN) erkennen (headerlos/smooth inkl. µm→nm)."""
+    """X=Distanz (nm), Y=Force (pN) erkennen."""
     exact_x = [c for c in df.columns if str(c).strip().lower() == "relative distance, nm"]
     exact_y = [c for c in df.columns if str(c).strip().lower() == "force, pn"]
     if exact_x and exact_y:
@@ -151,93 +143,62 @@ def _read_fd_xy(df: pd.DataFrame) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     elif df.shape[1] == 2:
         a = pd.to_numeric(df.iloc[:, 0], errors="coerce").values
         b = pd.to_numeric(df.iloc[:, 1], errors="coerce").values
-        cand: List[Tuple[np.ndarray, np.ndarray]] = []
         if _is_force_like(a) and (_is_dist_nm_like(b) or _is_dist_um_like(b)):
-            x1 = b * 1000.0 if _is_dist_um_like(b) else b
-            cand.append((x1, a))
-        if _is_force_like(b) and (_is_dist_nm_like(a) or _is_dist_um_like(a)):
-            x2 = a * 1000.0 if _is_dist_um_like(a) else a
-            cand.append((x2, b))
-        if cand:
-            x, y = cand[0]
-        else:
-            # Fallback: Spalte mit größerer Range = Distanz
-            def rng(u):
-                u = u[np.isfinite(u)]
-                return np.percentile(u, 99) - np.percentile(u, 1) if u.size else 0.0
-            if rng(a) >= rng(b):
-                xa, yb = a, b
-            else:
-                xa, yb = b, a
-            xa = xa * 1000.0 if _is_dist_um_like(xa) and not _is_dist_nm_like(xa) else xa
-            x, y = xa, yb
+            x, y = (b * 1000.0 if _is_dist_um_like(b) else b, a)
+        elif _is_force_like(b) and (_is_dist_nm_like(a) or _is_dist_um_like(a)):
+            x, y = (a * 1000.0 if _is_dist_um_like(a) else a, b)
+        else: # Fallback
+            rng = lambda u: np.ptp(u[np.isfinite(u)]) if np.any(np.isfinite(u)) else 0
+            x, y = (a, b) if rng(a) > rng(b) else (b, a)
+            if _is_dist_um_like(x) and not _is_dist_nm_like(x): x *= 1000.0
     else:
-        num = [c for c in df.columns if pd.to_numeric(df[c], errors="coerce").notna().sum() >= 5]
-        if len(num) < 2: return None
-        x = pd.to_numeric(df[num[0]], errors="coerce").values
-        y = pd.to_numeric(df[num[1]], errors="coerce").values
-
+        num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c].dtype)]
+        if len(num_cols) < 2: return None
+        x, y = df[num_cols[0]].values, df[num_cols[1]].values
+    
     m = np.isfinite(x) & np.isfinite(y)
     if m.sum() < 10: return None
     x, y = x[m], y[m]
-    if np.nanmedian(np.diff(x)) < 0:
-        x, y = x[::-1], y[::-1]
-    if np.nanmedian(y) < 0 and (np.nanmax(y) <= 0 or abs(np.nanmedian(y)) > abs(np.nanmax(y))*0.5):
-        y = -y
+    if np.nanmedian(np.diff(x)) < 0: x, y = x[::-1], y[::-1]
     return x, y
-
 
 # =========================
 #   CURVE CLEAN & SMOOTH
 # =========================
-def _robust_clip(y: np.ndarray, q=(0.005, 0.995)) -> np.ndarray:
-    lo, hi = np.nanquantile(y, q)
-    return np.clip(y, lo, hi)
-
 def _prepare_curve(x: np.ndarray, y: np.ndarray, target_n: int = 1400) -> Tuple[np.ndarray, np.ndarray]:
-    """Sortieren, Duplikate raus, clippen, glätten, resamplen → schöne Overlay-Linien."""
-    x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
+    """Sortieren, Duplikate, clippen, glätten, resamplen."""
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
     m = np.isfinite(x) & np.isfinite(y)
+    if m.sum() < 10: return np.array([]), np.array([])
     x, y = x[m], y[m]
-    if x.size < 10: return x, y
-
+    
     order = np.argsort(x); x, y = x[order], y[order]
     ux, idx = np.unique(x, return_index=True); x, y = ux, y[idx]
     if x.size < 10: return x, y
 
-    y = _robust_clip(y)
-    if savgol_filter is not None and x.size >= 31:
+    y = np.clip(y, *np.nanquantile(y, (0.005, 0.995)))
+    if savgol_filter is not None and x.size >= 41:
         try:
             win = max(41, int(x.size * 0.04) // 2 * 2 + 1)
             y = savgol_filter(y, window_length=win, polyorder=3, mode="interp")
-        except Exception:
-            pass
-    else:
-        k = max(7, int(x.size * 0.02) // 2 * 2 + 1)
-        if k > 1:
-            pad = k // 2
-            y_pad = np.pad(y, (pad, pad), mode="edge")
-            ker = np.ones(k) / k
-            y = np.convolve(y_pad, ker, mode="valid")
-
-    n = min(target_n, max(200, x.size))
+        except Exception: pass
+    
+    n = min(target_n, x.size)
     xg = np.linspace(x[0], x[-1], n)
     yg = np.interp(xg, x, y)
     return xg, yg
-
 
 def _collect_fd_curves(analysis_folder: str | Path, max_curves: int = 2000) -> List[Tuple[np.ndarray, np.ndarray, str]]:
     folder = Path(analysis_folder)
     curves: List[Tuple[np.ndarray, np.ndarray, str]] = []
     files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in (".csv", ".xlsx")]
-    smooth = [p for p in files if _is_smooth_filename(p)]
-    use = smooth if smooth else files
+    use = [p for p in files if _is_smooth_filename(p)] or files
     use.sort(key=lambda q: (("fd curve" not in q.name.lower()), q.name.lower()))
-
+    
     for p in use:
         if len(curves) >= max_curves: break
         df = _read_table(p)
-        if df is None or df.empty: continue
+        if df.empty: continue
         xy = _read_fd_xy(df)
         if xy is None: continue
         x, y = _prepare_curve(*xy)
@@ -246,299 +207,494 @@ def _collect_fd_curves(analysis_folder: str | Path, max_curves: int = 2000) -> L
         curves.append((x, y, d))
     return curves
 
-
 # =========================
-#      STABLE DENSITIES (EXTRA-SMOOTH)
+#      STABLE DENSITIES
 # =========================
 def _smooth_density_1d(values: np.ndarray, gridsize: int = 512):
-    """
-    Sehr glatte 1D-Dichte über Histogramm + Gauß-Glättung.
-    IMMER (N, N) mit N=gridsize. Deutlich erhöhte Mindest-Bandbreite.
-    """
+    """Sehr glatte 1D-Dichte über Histogramm + Gauß-Glättung."""
     x = np.asarray(values, dtype=float)
     x = x[np.isfinite(x)]
-    n = x.size
-    if n < 2:
-        return None
-
+    if x.size < 2: return None
+    
     x_min, x_max = np.min(x), np.max(x)
-    r = x_max - x_min if x_max > x_min else max(abs(x_max), 1.0)
-    pad = 0.05 * r
+    r = x_max - x_min if x_max > x_min else 1.0
+    pad = 0.15 * r
     edges = np.linspace(x_min - pad, x_max + pad, gridsize + 1)
-    centers = 0.5 * (edges[:-1] + edges[1:])  # Länge N
-
-    hist, _ = np.histogram(x, bins=edges, density=True)  # Länge N
-
-    std = np.std(x, ddof=1) if n > 1 else 0.0
-    iqr = np.subtract(*np.percentile(x, [75, 25])) if n > 1 else 0.0
-    sigma_silver = 0.9 * min(std, iqr / 1.34) * (n ** (-1/5)) if (std > 0 or iqr > 0) else 0.0
-    sigma_min = max(SMOOTH_BW_FRAC * r, 1e-6)           # breite Mindest-BW -> keine Stacheln
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    hist, _ = np.histogram(x, bins=edges, density=True)
+    
+    std = np.std(x, ddof=1)
+    iqr = np.subtract(*np.percentile(x, [75, 25]))
+    sigma_silver = 0.9 * min(std, iqr / 1.34) * (x.size ** (-1/5))
+    sigma_min = SMOOTH_BW_FRAC * r
     sigma_x = max(sigma_silver, sigma_min)
-
+    
     dx = edges[1] - edges[0]
     sigma_bins = max(sigma_x / dx, 0.5)
     half_w = int(4 * sigma_bins)
-    g = np.arange(-half_w, half_w + 1, dtype=float)
-    kernel = np.exp(-0.5 * (g / sigma_bins) ** 2)
+    kernel = np.exp(-0.5 * (np.arange(-half_w, half_w + 1) / sigma_bins) ** 2)
     kernel /= kernel.sum()
-
     dens = np.convolve(hist, kernel, mode="same")
-
-    if SMOOTH_2ND_PASS and SMOOTH_2ND_PASS > 0:
+    
+    if SMOOTH_2ND_PASS > 0:
         sigma_bins2 = sigma_bins * float(SMOOTH_2ND_PASS)
         half_w2 = int(3 * sigma_bins2)
-        g2 = np.arange(-half_w2, half_w2 + 1, dtype=float)
-        k2 = np.exp(-0.5 * (g2 / sigma_bins2) ** 2)
-        k2 /= k2.sum()
-        dens = np.convolve(dens, k2, mode="same")
-
-    if dens.size != centers.size:
-        x_src = np.linspace(centers[0], centers[-1], dens.size)
-        dens = np.interp(centers, x_src, dens)
-
+        k2 = np.exp(-0.5 * (np.arange(-half_w2, half_w2 + 1) / sigma_bins2) ** 2)
+        dens = np.convolve(dens, k2 / k2.sum(), mode="same")
+        
     return centers, dens
 
-
-def kdeplot_filled(
-    ax,
-    data,
-    label: str,
-    color: str,
-    lw: float = 1.6,
-    alpha: float = 0.35,
-):
-    """Glatte Dichte (Histogramm + Gauß). An den Rändern der Kurve auf y=0 andocken."""
+def kdeplot_filled(ax, data, label: str, color: str, lw: float = 1.6, alpha: float = 0.35):
+    """
+    Glatte Dichte plotten, am Rand auf y=0 andocken und die Dichtekurve zurückgeben.
+    """
     arr = pd.to_numeric(pd.Series(data), errors="coerce").dropna().values
-    if arr.size < 2:
-        return
+    if arr.size < 2: return None
+    
     res = _smooth_density_1d(arr, gridsize=600)
-    if res is None:
-        return
+    if res is None: return None
     xs, ys = res
-    if xs.size != ys.size:
-        n = min(xs.size, ys.size)
-        xs, ys = xs[:n], ys[:n]
-        
-    # --- Kurve am Anfang und Ende auf der x-Achse aufsetzen lassen ---
-    valid_indices = np.where(ys > 1e-6)[0]
-    if valid_indices.size == 0:
-        return
     
-    start_idx = valid_indices[0]
-    end_idx = valid_indices[-1]
+    nonzero_indices = np.where(ys > (ys.max() * 0.001))[0]
+    if nonzero_indices.size == 0: return xs, ys
 
-    xs_trimmed = xs[start_idx:end_idx+1]
-    ys_trimmed = ys[start_idx:end_idx+1]
+    start_idx = max(0, nonzero_indices[0] - 5)
+    end_idx = min(len(ys) - 1, nonzero_indices[-1] + 5)
+    xs_t = xs[start_idx : end_idx + 1]
+    ys_t = ys[start_idx : end_idx + 1]
+    if xs_t.size < 2: return xs, ys
+
+    xs_p = np.concatenate(([xs_t[0]], xs_t, [xs_t[-1]]))
+    ys_p = np.concatenate(([0.0], ys_t, [0.0]))
     
-    xs_padded = np.r_[xs_trimmed[0], xs_trimmed, xs_trimmed[-1]]
-    ys_padded = np.r_[0.0, ys_trimmed, 0.0]
+    min_len = min(len(xs_p), len(ys_p))
+    if min_len < 2: return xs, ys
+    xs_p, ys_p = xs_p[:min_len], ys_p[:min_len]
 
-    # Bisheriger Code: Zeichnet die Linie und die Füllung
-    ax.plot(xs_padded, ys_padded, lw=lw, label=label, color=color)
-    ax.fill_between(xs_padded, ys_padded, 0, alpha=alpha, color=color, linewidth=0)
-
-    # --- NEU: Originale Datenpunkte auf die Kurve zeichnen ---
-    # Wir interpolieren die y-Position für jeden originalen Datenpunkt aus der geglätteten Kurve.
-    # Dies sorgt dafür, dass die Punkte exakt auf der Linie liegen.
-    y_scatter = np.interp(arr, xs_padded, ys_padded)
-    
-    # Scatter-Plot der Punkte hinzufügen
+    ax.plot(xs_p, ys_p, lw=lw, label=label, color=color)
+    ax.fill_between(xs_p, ys_p, 0, alpha=alpha, color=color, linewidth=0)
+    y_scatter = np.interp(arr, xs_p, ys_p)
     ax.scatter(arr, y_scatter, color=color, s=15, alpha=0.8, zorder=5, edgecolor='black', linewidth=0.3)
+    
+    return xs, ys
 
+# ==================================================
+#   FUNKTIONEN FÜR GRAPHPAD-EXPORT
+# ==================================================
+def _calculate_average_curve(curves: List[Tuple[np.ndarray, np.ndarray, str]], direction: str) -> Optional[pd.DataFrame]:
+    """Berechnet eine mediane FD-Kurve aus einer Liste von Kurven."""
+    target_curves = [c for c in curves if c[2] == direction]
+    if len(target_curves) < 3:
+        return None
+
+    all_x = np.concatenate([c[0] for c in target_curves])
+    x_min, x_max = np.percentile(all_x, [5, 95])
+    x_grid = np.linspace(x_min, x_max, 500)
+
+    interpolated_ys = []
+    for x, y, _ in target_curves:
+        if x[0] <= x_max and x[-1] >= x_min:
+            y_interp = np.interp(x_grid, x, y, left=np.nan, right=np.nan)
+            interpolated_ys.append(y_interp)
+
+    if not interpolated_ys:
+        return None
+
+    y_matrix = np.vstack(interpolated_ys)
+    nan_mask = np.sum(np.isnan(y_matrix), axis=0) < (len(y_matrix) * 0.5)
+    x_grid = x_grid[nan_mask]
+    y_matrix = y_matrix[:, nan_mask]
+
+    if x_grid.size == 0:
+        return None
+
+    median_y = np.nanmedian(y_matrix, axis=0)
+    q1_y = np.nanpercentile(y_matrix, 25, axis=0)
+    q3_y = np.nanpercentile(y_matrix, 75, axis=0)
+    
+    return pd.DataFrame({
+        f"Distance_{direction} (nm)": x_grid,
+        f"Median_Force_{direction} (pN)": median_y,
+        f"Q1_Force_{direction} (pN)": q1_y,
+        f"Q3_Force_{direction} (pN)": q3_y,
+    })
+
+def generate_graphpad_file(
+    df: pd.DataFrame,
+    curves: List[Tuple[np.ndarray, np.ndarray, str]],
+    pdf_densities: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    analysis_folder: Path,
+    ts: str
+) -> str:
+    """Erstellt eine CSV-Datei, die für GraphPad Prism optimiert ist."""
+    graphpad_parts = []
+
+    for name, data in pdf_densities.items():
+        if data:
+            xs, ys = data
+            min_len = min(len(xs), len(ys))
+            if min_len > 0:
+                xs, ys = xs[:min_len], ys[:min_len]
+                graphpad_parts.append(pd.DataFrame({f"Density_{name}_X": xs, f"Density_{name}_Y": ys}))
+
+    for direction in ["unfolding", "refolding"]:
+        subset = df[df["Direction"] == direction]
+        if not subset.empty:
+            scatter_df = subset[["Delta Lc abs (nm)", "mean force [pN]"]].copy()
+            scatter_df.columns = [f"Scatter_dLc_{direction} (nm)", f"Scatter_Force_{direction} (pN)"]
+            scatter_df.reset_index(drop=True, inplace=True)
+            graphpad_parts.append(scatter_df)
+            
+    for direction in ["unfolding", "refolding"]:
+        avg_curve_df = _calculate_average_curve(curves, direction)
+        if avg_curve_df is not None:
+            graphpad_parts.append(avg_curve_df)
+
+    if not graphpad_parts:
+        return ""
+
+    final_df = pd.concat(graphpad_parts, axis=1)
+
+    out_name = f"GraphPad_Data_{ts.replace(':', '-').replace(' ', '_')}.csv"
+    out_path = str(analysis_folder / out_name)
+    final_df.to_csv(out_path, index=False, sep=",")
+    
+    return out_path
 
 # =========================
 #   SUMMARY & INTERPRET
 # =========================
 def _aggregate_key_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Kompakte Kennzahlen-Tabelle pro Richtung + Gesamt."""
+    """Kompakte Kennzahlen-Tabelle."""
     out = []
+    # --- MODIFIZIERT: Reduzierte Spalten für die finale Tabelle ---
+    cols_to_agg = [
+        ("mean force [pN]", "Force\n(pN)"),
+        ("Step length [nm]", "Step L.\n(nm)"),
+        ("Delta Lc abs (nm)", "|ΔLc|\n(nm)"),
+    ]
     for name, sel in [("unfolding", df[df["Direction"] == "unfolding"]),
                       ("refolding", df[df["Direction"] == "refolding"]),
                       ("all", df)]:
         row = {"Set": name, "n": int(len(sel))}
-        for col, key in [("mean force [pN]", "Force (pN)"), ("Delta Lc abs (nm)", "|ΔLc| (nm)")]:
+        for col, key in cols_to_agg:
             if col in sel.columns and not sel[col].dropna().empty:
                 v = pd.to_numeric(sel[col], errors="coerce").dropna()
-                row[f"{key} mean"] = np.mean(v)
-                row[f"{key} sd"] = np.std(v, ddof=1) if len(v) > 1 else 0.0
-                row[f"{key} median"] = np.median(v)
-            else:
-                row[f"{key} mean"] = np.nan
-                row[f"{key} sd"] = np.nan
-                row[f"{key} median"] = np.nan
+                row[f"{key}\nmean"] = np.mean(v)
+                row[f"{key}\nsd"] = np.std(v, ddof=1) if len(v) > 1 else 0.0
+                row[f"{key}\nmedian"] = np.median(v)
         out.append(row)
-    t = pd.DataFrame(out)
+    t = pd.DataFrame(out).dropna(axis=1, how='all')
     for c in t.columns:
         if c not in ("Set", "n"):
-            t[c] = t[c].map(lambda x: np.nan if pd.isna(x) else float(f"{x:.2f}"))
+            t[c] = t[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "nan")
+    
     return t
 
-def _tabulate(df: pd.DataFrame) -> str:
-    """Monospace-Tabellentext für PDF-Seite."""
-    if df.empty: return "No data."
-    cols = ["Set", "n", "Force (pN) mean", "Force (pN) sd", "Force (pN) median",
-            "|ΔLc| (nm) mean", "|ΔLc| (nm) sd", "|ΔLc| (nm) median"]
-    df = df[cols]
-    widths = [10, 6, 14, 12, 16, 16, 12, 18]
-    header = " ".join(str(c).ljust(w) for c, w in zip(cols, widths))
-    line = "-" * (sum(widths) + len(widths) - 1)
-    rows = [header, line]
-    for _, r in df.iterrows():
-        vals = [str(r[c]) if not pd.isna(r[c]) else "—" for c in cols]
-        rows.append(" ".join(v.ljust(w) for v, w in zip(vals, widths)))
-    return "\n".join(rows)
+def _format_p_value(p):
+    if p is None: return "nicht verfügbar"
+    return f"p < 0.001" if p < 0.001 else f"p = {p:.3f}"
 
-def _generate_interpretation(df: pd.DataFrame) -> str:
+def _generate_interpretation(df: pd.DataFrame, p_values: dict) -> str:
+    """Erzeugt eine detaillierte biophysikalische Interpretation."""
+    unf = df[df["Direction"] == "unfolding"].copy()
+    ref = df[df["Direction"] == "refolding"].copy()
+
+    unf["mean force [pN]"] = pd.to_numeric(unf["mean force [pN]"], errors='coerce')
+    ref["mean force [pN]"] = pd.to_numeric(ref["mean force [pN]"], errors='coerce')
+    unf["Delta Lc (nm)"] = pd.to_numeric(unf["Delta Lc (nm)"], errors='coerce')
+    ref["Delta Lc (nm)"] = pd.to_numeric(ref["Delta Lc (nm)"], errors='coerce')
+    unf.dropna(subset=["mean force [pN]", "Delta Lc (nm)"], inplace=True)
+    ref.dropna(subset=["mean force [pN]", "Delta Lc (nm)"], inplace=True)
+
+    num_files = df['Filename'].nunique() if 'Filename' in df.columns else 'N/A'
+    
+    out = [
+        "## Biophysikalische Interpretation der Ergebnisse", "",
+        f"Diese Analyse fasst **{len(df)}** Events aus **{num_files}** Experimenten zusammen. "
+        "Die folgenden Beobachtungen basieren auf den aggregierten Verteilungen der Entfaltungs- (unfolding) und "
+        "Wiedereinfaltungs- (refolding) Zyklen."
+    ]
+
+    if not unf.empty and not ref.empty:
+        median_force_unf, std_force_unf = unf["mean force [pN]"].median(), unf["mean force [pN]"].std()
+        median_force_ref, std_force_ref = ref["mean force [pN]"].median(), ref["mean force [pN]"].std()
+        out.append("\n### 1. Analyse der Faltungskräfte")
+        out.append(
+            f"Die **Entfaltung** erfordert eine mediane Kraft von **{median_force_unf:.1f} ± {std_force_unf:.1f} pN**. "
+            f"Die **Wiedereinfaltung** geschieht bei **{median_force_ref:.1f} ± {std_force_ref:.1f} pN**."
+        )
+        p_force_str = _format_p_value(p_values.get('force'))
+        out.append(f"Ein Mann-Whitney-U-Test bestätigt, dass dieser Unterschied statistisch signifikant ist (**{p_force_str}**).")
+
+        if median_force_unf > median_force_ref + std_force_ref:
+            hysteresis = median_force_unf - median_force_ref
+            out.append(
+                f"Die höhere Kraft bei der Entfaltung deutet auf eine **mechanische Hysterese** von ca. **{hysteresis:.1f} pN** hin. "
+                "Dies ist typisch für Experimente außerhalb des thermodynamischen Gleichgewichts und spiegelt die Energie wider, "
+                "die zur Überwindung der Faltungsenergiebarriere bei einer endlichen Ziehgeschwindigkeit benötigt wird."
+            )
+        else:
+            out.append(
+                "Die Kräfte sind sehr ähnlich, was auf einen Prozess nahe am **thermodynamischen Gleichgewicht** hindeutet."
+            )
+        out.append(
+            "Die **Streuung der Kräfte** (siehe Breite der Peaks im PDF-Diagramm) gibt Aufschluss über die Homogenität des Prozesses. "
+            "Enge Verteilungen deuten auf einen wohldefinierten Zwei-Zustands-Übergang hin."
+        )
+
+        median_dlc_unf, std_dlc_unf = unf["Delta Lc (nm)"].median(), unf["Delta Lc (nm)"].std()
+        median_dlc_ref, std_dlc_ref = ref["Delta Lc (nm)"].median(), ref["Delta Lc (nm)"].std()
+        out.append("\n### 2. Analyse der Konturlängenänderung (ΔLc)")
+        out.append(
+            f"Die mediane Längenänderung beträgt **{median_dlc_unf:.1f} ± {std_dlc_unf:.1f} nm** (Entfaltung) und **{median_dlc_ref:.1f} ± {std_dlc_ref:.1f} nm** (Wiedereinfaltung)."
+        )
+        
+        if abs(median_dlc_unf + median_dlc_ref) < 0.15 * abs(median_dlc_unf):
+             out.append(
+                "Die Übereinstimmung der |ΔLc|-Werte (Beträge sind spiegelbildlich) bestätigt, dass der Prozess **strukturell reversibel** ist. "
+                "Das Molekül kehrt in seinen ursprünglichen Zustand zurück."
+            )
+        else:
+            out.append(
+                "Eine signifikante Abweichung der |ΔLc|-Werte (z.B. +10 nm vs. -8 nm) könnte auf eine **inkomplette Wiedereinfaltung** oder fehlgefaltete Zustände hindeuten."
+            )
+        out.append(
+            "Das |ΔLc|-Diagramm mit **automatischer Peak-Erkennung** kann auf das Vorhandensein verschiedener, stabiler Entfaltungs-Events hinweisen (z.B. Entfalten mehrerer Domänen)."
+        )
+
+    out.extend([
+        "\n### 3. Fazit und Ausblick",
+        "Zusammenfassend deuten die Daten auf einen **mechanisch [hysteretischen/reversiblen]** Prozess mit einer **konsistenten strukturellen Änderung** hin. "
+        "Der Scatter-Plot (Force vs. |ΔLc|) kann Korrelationen zwischen Stabilität (Kraft) und Größe (|ΔLc|) aufzeigen.", "",
+        "**Hinweis:** Diese Analyse basiert auf aggregierten Daten. Die Untersuchung einzelner FD-Kurven ist entscheidend, um heterogenes Verhalten zu identifizieren."
+    ])
+
+    final_text = "\n".join(out)
+    if not unf.empty and not ref.empty:
+        placeholder = "[hysteretischen/reversiblen]"
+        replacement = "hysteretischen" if unf["mean force [pN]"].median() > ref["mean force [pN]"].median() else "weitgehend reversiblen"
+        final_text = final_text.replace(placeholder, replacement)
+
+    return final_text
+
+# =========================
+#  STATISTICAL ANALYSIS
+# =========================
+def _perform_statistical_tests(df: pd.DataFrame) -> dict:
+    if mannwhitneyu is None:
+        return {}
+    
+    p_values = {}
     unf = df[df["Direction"] == "unfolding"]
     ref = df[df["Direction"] == "refolding"]
 
-    out = [
-        "## Interpretation der Stapelanalyse",
-        "",
-        "Diese Analyse fasst die Ergebnisse mehrerer Einzelmessungen zusammen. Die folgenden Beobachtungen basieren auf den aggregierten Daten."
-    ]
-
-    # Force
-    if not unf.empty and not ref.empty:
-        mean_force_unf = unf["mean force [pN]"].mean()
-        mean_force_ref = ref["mean force [pN]"].mean()
-        if not np.isnan(mean_force_unf) and not np.isnan(mean_force_ref):
-            out.append("### Kräfte (Force)")
-            out.append(f"Die mittlere Entfaltungskraft (`unfolding`) liegt bei **{mean_force_unf:.2f} pN**, während die mittlere Wiedereinfaltungskraft (`refolding`) bei **{mean_force_ref:.2f} pN** liegt.")
-            if mean_force_unf > mean_force_ref:
-                out.append("Das legt nahe, dass zum Entfalten der Proteine eine höhere Kraft benötigt wird als für die Wiedereinfaltung. Dieser Unterschied ist oft ein Anzeichen für eine **hysteretische Schleife**, die durch die molekulare Reibung und die endliche Geschwindigkeit des Experiments verursacht wird.")
-            else:
-                out.append("Die gemessene Kraft ist bei beiden Prozessen ähnlich, was auf ein weitgehend reversibles System hindeuten könnte.")
-    
-    # Delta Lc
-    if not unf.empty and not ref.empty:
-        mean_dlc_unf = unf["Delta Lc abs (nm)"].mean()
-        mean_dlc_ref = ref["Delta Lc abs (nm)"].mean()
-        if not np.isnan(mean_dlc_unf) and not np.isnan(mean_dlc_ref):
-            out.append("### Längenänderung (|ΔLc|)")
-            out.append(f"Die durchschnittliche absolute Längenänderung bei der Entfaltung beträgt **{mean_dlc_unf:.2f} nm**, und bei der Wiedereinfaltung **{mean_dlc_ref:.2f} nm**.")
-            if abs(mean_dlc_unf - mean_dlc_ref) < 5:  # Schwellenwert für Ähnlichkeit
-                out.append("Die Längenänderungen bei Entfaltung und Wiedereinfaltung sind sehr ähnlich, was auf eine konsistente Strukturänderung im Experiment hindeutet. Das Fehlen größerer Abweichungen bestätigt, dass die Proteine in beiden Richtungen den gleichen molekularen Pfad durchlaufen.")
-            else:
-                out.append("Die unterschiedlichen Längenänderungen könnten auf eine ineffiziente Wiedereinfaltung oder auf eine unterschiedliche Anzahl von Entfaltungsereignissen pro Richtung hinweisen.")
-
-    out.append("---")
-    out.append("Dieser Bericht dient der Übersicht. Eine detaillierte Betrachtung der Einzelfälle kann weitere Erkenntnisse liefern.")
-
-    return "\n".join(out)
-
+    for key, col in [("force", "mean force [pN]"), ("steplength", "Step length [nm]"), ("dlc", "Delta Lc (nm)"), ("work", "Work [pN*nm]")]:
+        if col in df.columns:
+            d1 = unf[col].dropna()
+            d2 = ref[col].dropna()
+            if len(d1) >= 5 and len(d2) >= 5:
+                try:
+                    _, p = mannwhitneyu(d1, d2, alternative='two-sided')
+                    p_values[key] = p
+                except Exception:
+                    p_values[key] = None
+    return p_values
 
 # =========================
 #        REPORT-PDF
 # =========================
-FORCE_XLIM = (0, 30)   # fix
-DLCA_XLIM  = (0, 100)  # fix
+def _plot_example_curves(pdf: PdfPages, curves: list, num_examples: int = 3):
+    """Plottet einige zufällige Beispielkurven auf einer neuen PDF-Seite."""
+    unf_curves = [c for c in curves if c[2] == "unfolding"]
+    ref_curves = [c for c in curves if c[2] == "refolding"]
+    if not unf_curves and not ref_curves:
+        return
 
-def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = None) -> str:
+    fig, axs = plt.subplots(2, num_examples, figsize=(7, 4.5), constrained_layout=True, sharex=True, sharey=True)
+    fig.suptitle("Beispielhafte FD-Kurven", fontsize=12, weight='bold')
+
+    for i in range(num_examples):
+        ax = axs[0, i]
+        if i < len(unf_curves):
+            x, y, _ = random.choice(unf_curves)
+            ax.plot(x, y, color=COLOR["unfolding"])
+        ax.set_title(f"Unfolding Bsp. #{i+1}")
+        ax.grid(alpha=GRID_ALPHA)
+        if i == 0: ax.set_ylabel("Force (pN)")
+
+        ax = axs[1, i]
+        if i < len(ref_curves):
+            x, y, _ = random.choice(ref_curves)
+            ax.plot(x, y, color=COLOR["refolding"])
+        ax.set_title(f"Refolding Bsp. #{i+1}")
+        ax.grid(alpha=GRID_ALPHA)
+        if i == 0: ax.set_ylabel("Force (pN)")
+        ax.set_xlabel("Distance (nm)")
+
+    pdf.savefig(fig); plt.close(fig)
+
+def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = None) -> Tuple[str, str]:
+    """Erzeugt den PDF-Bericht und die GraphPad-CSV-Datei. Gibt Pfade zu beiden zurück."""
     folder = Path(analysis_folder)
     df = _collect_batch_results(folder)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if pdf_name is None:
         pdf_name = f"Batch_Report_{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
     out_path = str(folder / pdf_name)
-
-    if "Delta Lc abs (nm)" in df.columns:
-        df["Delta Lc abs (nm)"] = pd.to_numeric(df["Delta Lc abs (nm)"], errors="coerce")
-    if "mean force [pN]" in df.columns:
-        df["mean force [pN]"] = pd.to_numeric(df["mean force [pN]"], errors="coerce")
     
-    # Filtern der Daten für die Plots
-    plot_df = df.dropna(subset=["mean force [pN]", "Delta Lc abs (nm)", "Direction"])
+    p_values = _perform_statistical_tests(df)
+    
+    has_signed_dlc = "Delta Lc (nm)" in df.columns and df["Delta Lc (nm)"].notna().sum() > 5
+    has_step_length = "Step length [nm]" in df.columns and df["Step length [nm]"].notna().sum() > 5
 
-    # matplotlib.backends.backend_pdf speichert nativ Vektorgrafiken
+    pdf_densities = {}
+    curves = []
+
     with PdfPages(out_path) as pdf:
-        # 1) kompakte Force/ΔLc-Dichten (nebeneinander)
-        if not df.empty:
-            fig, axs = plt.subplots(1, 2, figsize=(6.5, 3.6), constrained_layout=True)
-            # Force
-            ax = axs[0]; ax.grid(alpha=GRID_ALPHA)
-            refF = df.loc[df["Direction"] == "refolding", "mean force [pN]"]
-            unfF = df.loc[df["Direction"] == "unfolding", "mean force [pN]"]
-            kdeplot_filled(ax, refF, "refolding", COLOR["refolding"])
-            kdeplot_filled(ax, unfF, "unfolding", COLOR["unfolding"])
-            ax.set_xlim(*FORCE_XLIM); ax.set_ylim(bottom=0)
-            ax.set_xlabel("Force (pN)"); ax.set_ylabel("Wahrscheinlichkeit"); ax.set_title("PDF: Force")
-            ax.legend()
+        # === SEITE 1: Haupt-Diagramme (Force, |ΔLc|) ===
+        fig1, axs1 = plt.subplots(1, 2, figsize=(7.5, 3.8), constrained_layout=True)
+        
+        # Plot 1.1: Force
+        ax = axs1[0]
+        ax.grid(alpha=GRID_ALPHA); ax.set_title("PDF: Force")
+        ref_force = df.loc[df["Direction"] == "refolding", "mean force [pN]"].dropna()
+        if len(ref_force) >= 2:
+            pdf_densities["Force_refolding"] = kdeplot_filled(ax, ref_force, "refolding", COLOR["refolding"])
+        unf_force = df.loc[df["Direction"] == "unfolding", "mean force [pN]"].dropna()
+        if len(unf_force) >= 2:
+            pdf_densities["Force_unfolding"] = kdeplot_filled(ax, unf_force, "unfolding", COLOR["unfolding"])
+        if not df.empty and "mean force [pN]" in df.columns and not df["mean force [pN]"].dropna().empty:
+            ax.set_xlim(0, max(30, df["mean force [pN]"].quantile(0.99, interpolation='higher')))
+        ax.set_ylim(bottom=0); ax.set_xlabel("Force (pN)"); ax.set_ylabel("Probability"); ax.legend()
 
-            # |ΔLc|
-            ax = axs[1]; ax.grid(alpha=GRID_ALPHA)
-            refX = df.loc[df["Direction"] == "refolding", "Delta Lc abs (nm)"]
-            unfX = df.loc[df["Direction"] == "unfolding", "Delta Lc abs (nm)"]
-            kdeplot_filled(ax, refX, "refolding", COLOR["refolding"])
-            kdeplot_filled(ax, unfX, "unfolding", COLOR["unfolding"])
-            ax.set_xlim(*DLCA_XLIM); ax.set_ylim(bottom=0)
-            ax.set_xlabel("|ΔLc| (nm)"); ax.set_title("PDF: |ΔLc|")
-            pdf.savefig(fig); plt.close(fig)
+        # Plot 1.2: |ΔLc|
+        ax = axs1[1]
+        ax.grid(alpha=GRID_ALPHA); ax.set_title("PDF: |ΔLc| mit Peaks")
+        for direction in ["refolding", "unfolding"]:
+            data = df.loc[df["Direction"] == direction, "Delta Lc abs (nm)"].dropna()
+            if len(data) < 2: continue
+            density_data = kdeplot_filled(ax, data, direction, COLOR[direction])
+            pdf_densities[f"dLc_{direction}"] = density_data
+            if find_peaks and density_data:
+                xs, ys = density_data
+                peaks, _ = find_peaks(ys, height=ys.max()*0.1, distance=10)
+                for p_idx in peaks:
+                    if p_idx < len(xs):
+                        ax.axvline(xs[p_idx], color=COLOR[direction], ls='--', alpha=0.8, lw=1)
+                        ax.text(xs[p_idx], ys[p_idx], f' {xs[p_idx]:.1f}', color=COLOR[direction], va='bottom', ha='center', fontsize=8)
+        if not df.empty and "Delta Lc abs (nm)" in df.columns and not df["Delta Lc abs (nm)"].dropna().empty:
+            ax.set_xlim(0, max(20, df["Delta Lc abs (nm)"].quantile(0.99, interpolation='higher') * 1.2))
+        ax.set_ylim(bottom=0); ax.set_xlabel("|ΔLc| (nm)"); ax.legend()
+        
+        pdf.savefig(fig1); plt.close(fig1)
 
-        # 2) Overlay FD – kompakte Seite (Start/Ende an x-Achse andocken)
+        # === SEITE 2: Abgeleitete Diagramme (Step Length, ΔLc signed) ===
+        if has_step_length or has_signed_dlc:
+            fig2, axs2 = plt.subplots(1, 2, figsize=(7.5, 4.0), constrained_layout=True)
+
+            # Plot 2.1: Step Length
+            ax = axs2[0]
+            if has_step_length:
+                ax.grid(alpha=GRID_ALPHA); ax.set_title("PDF: Step Length")
+                for direction in ["refolding", "unfolding"]:
+                    data = df.loc[df["Direction"] == direction, "Step length [nm]"].dropna()
+                    if len(data) >= 2:
+                        density_data = kdeplot_filled(ax, data, direction, COLOR[direction])
+                        pdf_densities[f"StepLength_{direction}"] = density_data
+                if not df["Step length [nm]"].dropna().empty:
+                    ax.set_xlim(0, max(20, df["Step length [nm]"].quantile(0.99, interpolation='higher') * 1.2))
+                ax.set_ylim(bottom=0); ax.set_xlabel("Step Length (nm)"); ax.legend()
+            else:
+                ax.axis("off")
+
+            # Plot 2.2: ΔLc (signed)
+            ax = axs2[1]
+            if has_signed_dlc:
+                ax.grid(alpha=GRID_ALPHA); ax.set_title("PDF: ΔLc (signed)")
+                ref_dlc = df.loc[df["Direction"] == "refolding", "Delta Lc (nm)"].dropna()
+                if len(ref_dlc) >= 2:
+                    pdf_densities["Signed_dLc_refolding"] = kdeplot_filled(ax, ref_dlc, "refolding", COLOR["refolding"])
+                unf_dlc = df.loc[df["Direction"] == "unfolding", "Delta Lc (nm)"].dropna()
+                if len(unf_dlc) >= 2:
+                    pdf_densities["Signed_dLc_unfolding"] = kdeplot_filled(ax, unf_dlc, "unfolding", COLOR["unfolding"])
+                if not df["Delta Lc (nm)"].dropna().empty:
+                    max_abs_val = df["Delta Lc (nm)"].abs().quantile(0.99, interpolation='higher') * 1.1
+                    max_abs_val = max(15, max_abs_val)
+                    ax.set_xlim(-max_abs_val, max_abs_val)
+                ax.set_ylim(bottom=0); ax.set_xlabel("ΔLc (nm)"); ax.legend()
+            else:
+                ax.axis("off")
+            
+            pdf.savefig(fig2); plt.close(fig2)
+
+        # === Weitere PDF-Seiten ===
         curves = _collect_fd_curves(folder, max_curves=2000)
         if curves:
-            fig = plt.figure(figsize=(6.5, 5.2), constrained_layout=True)
-            ax = plt.gca(); ax.grid(alpha=GRID_ALPHA)
-            for dir_key in ("refolding", "unfolding"):
-                for x, y, d in curves:
-                    if d != dir_key: continue
-                    # an die x-Achse andocken: y=0 an Anfang/Ende
-                    x_plot = np.r_[x[0], x, x[-1]]
-                    y_plot = np.r_[0.0,  y, 0.0]
-                    ax.plot(x_plot, y_plot, lw=1.0, alpha=0.45, color=COLOR[dir_key])
+            fig_overlay = plt.figure(figsize=(6.5, 5.2), constrained_layout=True)
+            ax = fig_overlay.gca(); ax.grid(alpha=GRID_ALPHA)
             n_ref = sum(1 for _, _, d in curves if d == "refolding")
             n_unf = sum(1 for _, _, d in curves if d == "unfolding")
+            for x, y, d in curves:
+                if d in COLOR:
+                    ax.plot(np.r_[x[0], x, x[-1]], np.r_[0.0, y, 0.0], lw=0.8, alpha=0.4, color=COLOR[d])
             ax.plot([], [], color=COLOR["refolding"], label=f"refolding (n={n_ref})")
             ax.plot([], [], color=COLOR["unfolding"], label=f"unfolding (n={n_unf})")
             ax.set_xlabel("Relative distance (nm)"); ax.set_ylabel("Force (pN)")
-            ax.set_title("Overlay smoothed FD curves"); ax.legend(loc="upper left")
-            pdf.savefig(fig); plt.close(fig)
+            ax.set_title("Overlay aller geglätteten FD-Kurven"); ax.legend(loc="upper left")
+            pdf.savefig(fig_overlay); plt.close(fig_overlay)
+            _plot_example_curves(pdf, curves)
 
-        # 3) Scatter-Plots
+        plot_df = df.dropna(subset=["mean force [pN]", "Delta Lc abs (nm)", "Direction"])
         if not plot_df.empty:
-            fig, ax = plt.subplots(figsize=(6.5, 5.2), constrained_layout=True)
-            ax.grid(alpha=GRID_ALPHA)
+            fig_scatter = plt.figure(figsize=(6.5, 5.2), constrained_layout=True)
+            ax = fig_scatter.gca(); ax.grid(alpha=GRID_ALPHA)
             for direction, group in plot_df.groupby("Direction"):
                 if direction in COLOR:
                     ax.scatter(group["Delta Lc abs (nm)"], group["mean force [pN]"],
                                color=COLOR[direction], label=direction, alpha=0.6, s=12)
             ax.set_xlabel("|ΔLc| (nm)"); ax.set_ylabel("Force (pN)")
-            ax.set_title("Scatter-Plot: Force vs. |ΔLc|")
-            ax.legend(title="Direction")
-            pdf.savefig(fig); plt.close(fig)
+            ax.set_title("Scatter-Plot: Force vs. |ΔLc|"); ax.legend(title="Direction")
+            pdf.savefig(fig_scatter); plt.close(fig_scatter)
 
-        # 4) Summary-Tabelle (kompakt)
-        keytab = _aggregate_key_table(df) if not df.empty else pd.DataFrame()
-        fig = plt.figure(figsize=(7, 5.0)) # Etwas breiter gemacht für mehr Platz
-        ax = plt.gca(); ax.axis("off")
-        header = f"Batch: {folder.name}\nGenerated: {ts}\nFiles: {df['Filename'].nunique() if 'Filename' in df.columns else 0}    Rows: {len(df)}"
-        ax.text(0.05, 0.95, header, va="top", fontsize=11) # Linken Rand etwas vergrößert
-        ax.text(0.05, 0.86, _tabulate(keytab), family="monospace", fontsize=9, va="top") # Linken Rand etwas vergrößert
-        ax.text(0.05, 0.10,
-                "Hinweis: Dichten via Histogramm+Gauß (breite Mindest-Bandbreite). KDE & FD an den Achsenenden auf y=0 angedockt.",
-                fontsize=8, alpha=0.7)
-        
-        # NEU: Diese Zeile sorgt für eine automatische Anpassung des Layouts, um Abschneiden zu verhindern
-        fig.tight_layout(pad=1.5) 
-        
-        pdf.savefig(fig); plt.close(fig)
-        
-        # 5) Interpretation (text-only)
         if not df.empty:
-            interpretation_text = _generate_interpretation(df)
-            fig = plt.figure(figsize=(7, 5.0), constrained_layout=True)
-            ax = plt.gca(); ax.axis("off")
-            # Text mit automatischem Umbruch für bessere Lesbarkeit
-            ax.text(0.05, 0.95, interpretation_text, va="top", fontsize=10, linespacing=1.5, wrap=True)
+            keytab = _aggregate_key_table(df)
+            fig_table = plt.figure(figsize=(7.5, 4))
+            ax_table = fig_table.add_subplot(111)
+            ax_table.axis("off")
 
-            # NEU: Auch hier zur Sicherheit hinzufügen, um das Layout anzupassen
-            fig.tight_layout(pad=1.5)
+            header = f"Batch: {folder.name}\nGenerated: {ts}\nFiles: {df['Filename'].nunique() if 'Filename' in df.columns else 0}    Rows: {len(df)}"
+            ax_table.text(0.5, 0.9, header, ha="center", va="center", fontsize=11, wrap=True)
 
-            pdf.savefig(fig); plt.close(fig)
+            keytab_str = keytab.reset_index(drop=True)
+            
+            table = ax_table.table(cellText=keytab_str.values,
+                                   colLabels=keytab_str.columns,
+                                   cellLoc='center',
+                                   loc='center',
+                                   bbox=[0, 0.05, 1, 0.75])
+            
+            table.auto_set_font_size(False)
+            table.set_fontsize(8)
+            table.scale(1.0, 2.2) 
 
-    return out_path
+            for (row, col), cell in table.get_celld().items():
+                if row == 0:
+                    cell.set_text_props(weight='bold')
+                if col == 0:
+                    cell.set_text_props(weight='bold')
 
+            pdf.savefig(fig_table); plt.close(fig_table)
+        
+        if not df.empty:
+            interpretation_text = _generate_interpretation(df, p_values)
+            fig_text = plt.figure(figsize=(7, 9.0), constrained_layout=True)
+            ax_text = fig_text.gca(); ax_text.axis("off")
+            ax_text.text(0.05, 0.95, interpretation_text, va="top", fontsize=10, linespacing=1.5, wrap=True)
+            pdf.savefig(fig_text); plt.close(fig_text)
+
+    gp_path = generate_graphpad_file(df, curves, pdf_densities, folder, datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+    return out_path, gp_path
 
 # =========================
 #   BATCH AGGREGATION
@@ -546,58 +702,40 @@ def generate_batch_pdf(analysis_folder: str | Path, pdf_name: Optional[str] = No
 def _collect_batch_results(analysis_folder: Path) -> pd.DataFrame:
     parts = []
     for p in analysis_folder.iterdir():
-        if not p.is_file() or p.suffix.lower() not in (".csv", ".xlsx"):
-            continue
+        if not p.is_file() or p.suffix.lower() not in (".csv", ".xlsx"): continue
         df = _read_table(p)
-        if df is None or df.empty:
-            continue
-
-        cols = {str(c).lower(): c for c in df.columns}
-        col_file  = cols.get("filename") or cols.get("file")
-        col_dir   = cols.get("direction") or cols.get("orientation")
+        if df.empty: continue
+        cols = {str(c).lower().strip(): c for c in df.columns}
+        
+        col_file = cols.get("filename") or cols.get("file")
+        col_dir = cols.get("direction") or cols.get("orientation")
         col_force = cols.get("mean force [pn]") or cols.get("force") or cols.get("fc")
-        col_sl    = cols.get("step length [nm]") or cols.get("step length") \
-                    or cols.get("steplength") or cols.get("step_length")
+        col_sl = cols.get("step length [nm]") or cols.get("step length") or cols.get("steplength")
+        col_work = cols.get("work [pn*nm]") or cols.get("work [pn nm]") or cols.get("work")
 
-        if not (col_file or col_dir or col_force or col_sl):
-            continue
-
+        if not any([col_file, col_dir, col_force, col_sl, col_work]): continue
+        
         out = pd.DataFrame()
-        out["Filename"] = (df[col_file].astype(str) if (col_file in df) else p.stem)
-
-        if col_dir in df:
-            d_raw = df[col_dir].astype(str).str.lower()
-        else:
-            d_raw = pd.Series([None] * len(out))
-        d_norm = d_raw.replace({
-            "forward":"unfolding","forwards":"unfolding","fw":"unfolding","unfold":"unfolding",
-            "reverse":"refolding","backward":"refolding","rv":"refolding","refold":"refolding"
+        out["Filename"] = df[col_file] if col_file else p.stem
+        
+        d_raw = df[col_dir].astype(str).str.lower() if col_dir else pd.Series([_detect_direction_from_name(p.name)] * len(df))
+        out["Direction"] = d_raw.replace({
+            "forward": "unfolding", "fw": "unfolding", "unfold": "unfolding",
+            "reverse": "refolding", "rv": "refolding", "refold": "refolding"
         }).fillna("unknown")
-        d_norm = d_norm.mask(d_norm.eq("unknown"), _detect_direction_from_name(p.name))
-        out["Direction"] = d_norm
 
-        if col_force in df:
-            out["mean force [pN]"] = pd.to_numeric(df[col_force], errors="coerce")
-        if col_sl in df:
+        if col_force: out["mean force [pN]"] = pd.to_numeric(df[col_force], errors="coerce")
+        if col_work: out["Work [pN*nm]"] = pd.to_numeric(df[col_work], errors="coerce")
+        if col_sl:
             out["Step length [nm]"] = pd.to_numeric(df[col_sl], errors="coerce")
-
-        if "Step length [nm]" in out.columns:
-            sign = np.where(out["Direction"].astype(str).str.startswith("refold"), -1.0, 1.0)
-            dlc = out["Step length [nm]"].apply(lambda z: float(z) if pd.notna(z) else np.nan)
-            out["Delta Lc (nm)"] = dlc * sign
-            out["Delta Lc abs (nm)"] = pd.to_numeric(out["Delta Lc (nm)"], errors="coerce").abs()
-
+            sign = np.where(out["Direction"].str.startswith("refold"), -1.0, 1.0)
+            out["Delta Lc (nm)"] = out["Step length [nm]"] * sign
+            out["Delta Lc abs (nm)"] = out["Delta Lc (nm)"].abs()
+        
         parts.append(out)
 
-    if not parts:
-        return pd.DataFrame(columns=["Filename","Direction","mean force [pN]","Step length [nm]","Delta Lc (nm)","Delta Lc abs (nm)"])
-    df_all = pd.concat(parts, ignore_index=True)
-    df_all["Direction"] = df_all["Direction"].fillna("unknown").str.lower().replace({
-        "unf":"unfolding","unfold":"unfolding","forward":"unfolding","fw":"unfolding",
-        "ref":"refolding","refold":"refolding","reverse":"refolding","rv":"refolding"
-    })
-    return df_all
-
+    if not parts: return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True)
 
 # =========================
 #   JOB LAUNCH & ROUTES
@@ -605,8 +743,9 @@ def _collect_batch_results(analysis_folder: Path) -> pd.DataFrame:
 def _run_batch(job_id: str, folder: str):
     try:
         JOBS[job_id]["status"] = "running"
-        pdf_path = generate_batch_pdf(folder)
+        pdf_path, gp_path = generate_batch_pdf(folder)
         JOBS[job_id]["pdf_path"] = pdf_path
+        JOBS[job_id]["graphpad_path"] = gp_path
         JOBS[job_id]["done"] = True
         JOBS[job_id]["status"] = "done"
     except Exception as e:
@@ -614,44 +753,54 @@ def _run_batch(job_id: str, folder: str):
         JOBS[job_id]["status"] = "error"
         JOBS[job_id]["done"] = True
 
-
 @report_bp.post("/batch/start")
 def start_batch():
     data = request.get_json(silent=True) or {}
     folder = data.get("folder")
-    if not folder:
-        return jsonify({"error": "Missing 'folder' in JSON body"}), 400
-    if not Path(folder).exists():
-        return jsonify({"error": "Folder not found: {folder}"}), 404
-
+    if not folder: return jsonify({"error": "Missing 'folder' in JSON body"}), 400
+    if not Path(folder).exists(): return jsonify({"error": f"Folder not found: {folder}"}), 404
     job_id = uuid.uuid4().hex[:12]
     JOBS[job_id] = {
-        "id": job_id, "folder": folder,
-        "created": datetime.now().isoformat(timespec="seconds"),
-        "status": "queued", "done": False, "error": None, "pdf_path": None,
+        "id": job_id, "folder": folder, "created": datetime.now().isoformat(timespec="seconds"),
+        "status": "queued", "done": False, "error": None, "pdf_path": None, "graphpad_path": None
     }
     threading.Thread(target=_run_batch, args=(job_id, folder), daemon=True).start()
     return jsonify({"job_id": job_id, "status": "queued"})
 
-
 @report_bp.get("/job/<job_id>")
 def job_status(job_id):
     job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"error": "job not found"}), 404
-    resp = {k: v for k, v in job.items() if k != "pdf_path"}
+    if not job: return jsonify({"error": "job not found"}), 404
+    resp = {k: v for k, v in job.items() if k not in ("pdf_path", "graphpad_path")}
     resp["report_ready"] = bool(job.get("done") and job.get("pdf_path"))
+    resp["graphpad_data_ready"] = bool(job.get("done") and job.get("graphpad_path"))
     return jsonify(resp)
 
-
+# ##### MODIFIZIERTER BLOCK: Kein Download mehr, nur noch Pfad-Anzeige #####
 @report_bp.get("/job/<job_id>/report.pdf")
 def job_report_pdf(job_id):
     job = JOBS.get(job_id)
-    if not job:
-        abort(404)
-    if job.get("status") != "done" or not job.get("pdf_path"):
+    if not job: abort(404)
+    if not job.get("done") or not job.get("pdf_path"):
         return jsonify({"error": "report not ready"}), 400
-    pdf_path = job["pdf_path"]
-    if not Path(pdf_path).exists():
+    pdf_path = Path(job["pdf_path"])
+    if not pdf_path.exists():
         return jsonify({"error": "report missing on disk"}), 410
-    return send_file(pdf_path, as_attachment=True)
+    
+    return send_file(pdf_path, as_attachment=True, download_name="Batch_Report.pdf")
+
+@report_bp.get("/job/<job_id>/report.csv")
+def job_report_csv(job_id):
+    job = JOBS.get(job_id)
+    if not job: abort(404)
+    if not job.get("done") or not job.get("graphpad_path"):
+        return jsonify({"error": "graphpad data not ready"}), 400
+    gp_path = Path(job["graphpad_path"])
+    if not gp_path.exists():
+        return jsonify({"error": "graphpad data missing on disk"}), 410
+    
+    return jsonify({
+        "status": "success",
+        "message": "GraphPad CSV created successfully. Please open the file directly.",
+        "path": job["graphpad_path"]
+    })
