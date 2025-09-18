@@ -1,10 +1,12 @@
 # batch_report.py — AVOCADO Batch Report (Version 8 - Ohne Download)
 # FINALE VERSION 6: Reduzierte Tabelle
+# MODIFIZIERT: Korrekte DeltaLC-Berechnung aus app.py integriert
 from __future__ import annotations
 
 import re
 import uuid
 import threading
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
@@ -49,6 +51,36 @@ plt.rcParams.update({
 # --- KDE-Glättung (Einstellung für scharfe Peaks) ---
 SMOOTH_BW_FRAC = 0.025
 SMOOTH_2ND_PASS = 0.0
+
+# ==========================================================
+#   PHYSIK-KONSTANTEN & eFJC (für ΔLc aus Step-Länge)
+#   (Übernommen aus app.py für konsistente Berechnung)
+# ==========================================================
+KBT_PN_NM       = 4.114    # pN·nm bei ~298 K
+KUHN_B_NM       = 1.9      # nm (≈ 2*Lp_ss)
+STRETCH_S_PN    = 1000.0   # pN
+DEFAULT_F_REF   = 15.0     # pN – feste Referenzkraft für ΔLc
+MIN_VALID_FORCE = 8.0      # pN – zu klein → ΔLc unsicher → NaN
+
+def phi_ss_eFJC(F_pN: float,
+                b_nm: float = KUHN_B_NM,
+                S_pN: float = STRETCH_S_PN,
+                kBT: float = KBT_PN_NM) -> float:
+    """eFJC-Formel zur Berechnung der relativen Ausdehnung."""
+    if F_pN is None or not (F_pN > 0):
+        return float('nan')
+    y = F_pN * b_nm / kBT
+    # Verhindert Overflow in math.tanh für große y
+    if y > 700:
+        return 1.0 + (F_pN / S_pN)
+    return (1.0 / math.tanh(y) - 1.0 / y) + (F_pN / S_pN)
+
+def delta_lc_from_step(delta_x_nm: float, F_eval_pN: float) -> float:
+    """Berechnet Delta Lc aus der gemessenen Schrittlänge (delta_x) bei einer gegebenen Kraft."""
+    if delta_x_nm is None or np.isnan(delta_x_nm):
+        return np.nan
+    phi = phi_ss_eFJC(F_eval_pN)
+    return (abs(delta_x_nm) / phi) if (phi and not math.isnan(phi)) else np.nan
 
 # =========================
 #         IO / READ
@@ -713,7 +745,9 @@ def _collect_batch_results(analysis_folder: Path) -> pd.DataFrame:
         col_sl = cols.get("step length [nm]") or cols.get("step length") or cols.get("steplength")
         col_work = cols.get("work [pn*nm]") or cols.get("work [pn nm]") or cols.get("work")
 
-        if not any([col_file, col_dir, col_force, col_sl, col_work]): continue
+        # Überspringen, wenn es keine Analyse-Datei ist (z.B. GraphPad-Export)
+        if not any([col_dir, col_force, col_sl]):
+            continue
         
         out = pd.DataFrame()
         out["Filename"] = df[col_file] if col_file else p.stem
@@ -726,12 +760,43 @@ def _collect_batch_results(analysis_folder: Path) -> pd.DataFrame:
 
         if col_force: out["mean force [pN]"] = pd.to_numeric(df[col_force], errors="coerce")
         if col_work: out["Work [pN*nm]"] = pd.to_numeric(df[col_work], errors="coerce")
+        
+        # ##################################################################
+        # HIER BEGINNT DER ANGEPASSTE CODEBLOCK FÜR DELTA LC
+        # ##################################################################
         if col_sl:
             out["Step length [nm]"] = pd.to_numeric(df[col_sl], errors="coerce")
+            
+            dx = out["Step length [nm]"]
+            Fm = pd.to_numeric(df[col_force], errors="coerce") if col_force else pd.Series(np.nan, index=df.index)
+            
+            dlc_values = []
+            for i in df.index:
+                step_len = dx.get(i)
+                mean_force = Fm.get(i)
+                
+                if pd.isna(step_len):
+                    dlc_values.append(np.nan)
+                    continue
+
+                # Ungültig, wenn Kraft zu klein; sonst Standard-Referenzkraft für Konsistenz verwenden
+                if not pd.isna(mean_force) and mean_force < MIN_VALID_FORCE:
+                    dlc_values.append(np.nan)
+                else:
+                    dlc = delta_lc_from_step(step_len, DEFAULT_F_REF)
+                    dlc_values.append(dlc)
+
+            out["Delta Lc (nm)"] = dlc_values
+            
+            # Vorzeichen basierend auf der Richtung anwenden
             sign = np.where(out["Direction"].str.startswith("refold"), -1.0, 1.0)
-            out["Delta Lc (nm)"] = out["Step length [nm]"] * sign
+            out["Delta Lc (nm)"] *= sign
+            
             out["Delta Lc abs (nm)"] = out["Delta Lc (nm)"].abs()
-        
+        # ##################################################################
+        # HIER ENDET DER ANGEPASSTE CODEBLOCK
+        # ##################################################################
+
         parts.append(out)
 
     if not parts: return pd.DataFrame()
