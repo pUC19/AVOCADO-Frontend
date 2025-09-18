@@ -7,27 +7,43 @@
 import RNA
 import re
 
-def calculate_contour_length(sequence, seq_type):
+def calculate_contour_length(sequence, seq_type, structure=None):
     """
-    Berechnet die ungefähre Konturlänge für eine gegebene DNA- oder RNA-Sequenz.
+    Berechnet die Konturlänge für eine gegebene DNA- oder RNA-Sequenz.
+    Für RNA wird die Sekundärstruktur berücksichtigt, um eine genauere Schätzung zu erhalten.
 
     Argumente:
     sequence (str): Die Nukleinsäuresequenz.
     seq_type (str): Der Typ der Sequenz ('DNA' oder 'RNA').
+    structure (str, optional): Die Sekundärstruktur in Dot-Bracket-Notation. Nötig für RNA.
 
     Rückgabe:
     float: Die berechnete Konturlänge in Nanometern (nm).
     """
-    length_bp = len(sequence)
+    length_nt = len(sequence)
     
     if seq_type == 'DNA':
         # Annahme: Die Länge eines Basenpaares in der B-DNA-Doppelhelix beträgt ca. 0.34 nm.
         # Die Konturlänge entspricht der Länge der Doppelhelix.
-        contour_length = length_bp * 0.34
+        contour_length = length_nt * 0.34
     elif seq_type == 'RNA':
-        # Annahme: Der Abstand zwischen den Basen in einer einzelsträngigen RNA
-        # beträgt ca. 0.5 bis 0.7 nm. Wir verwenden hier einen Mittelwert von 0.6 nm.
-        contour_length = length_bp * 0.6
+        # Wenn eine Struktur vorhanden ist, wird die Länge genauer berechnet.
+        if structure:
+            # Zähle die Anzahl der ungepaarten Basen (Loops) und der Basenpaare (Stems)
+            num_unpaired_bases = structure.count('.')
+            num_base_pairs = structure.count('(')
+
+            # Länge der einzelsträngigen Regionen (Loops): angenommener Abstand 0.59 nm/Base
+            length_unpaired = num_unpaired_bases * 0.59
+            
+            # Länge der doppelsträngigen Regionen (Stems): angenommener Abstand 0.34 nm/Basenpaar
+            length_paired = num_base_pairs * 0.34
+
+            # Die Gesamtkonturlänge ist die Summe der Längen der Stems und der Loops
+            contour_length = length_paired + length_unpaired
+        else:
+            # Fallback, falls keine Struktur übergeben wird (einfache Berechnung)
+            contour_length = length_nt * 0.59
     else:
         contour_length = 0.0
         
@@ -50,16 +66,14 @@ def analyze_sequence(sequence):
 
     # 2. Sequenztyp bestimmen (DNA oder RNA)
     seq_type = 'RNA' if 'U' in sequence else 'DNA'
-
-    # Für die Faltung muss DNA in RNA umgewandelt werden (T -> U)
+    
     rna_sequence = sequence.replace('T', 'U')
 
-    # 3. Konturlänge berechnen
-    contour_length = calculate_contour_length(sequence, seq_type)
-
-    # 4. Sekundärstruktur vorhersagen mit ViennaRNA
-    # RNA.fold() gibt die Struktur in "Dot-Bracket"-Notation und die minimale freie Energie (MFE) zurück.
+    # 3. Sekundärstruktur *zuerst* vorhersagen, da sie für die Längenberechnung benötigt wird
     (structure, mfe) = RNA.fold(rna_sequence)
+
+    # 4. Konturlänge berechnen (mit der vorhergesagten Struktur für RNA)
+    contour_length = calculate_contour_length(sequence, seq_type, structure)
 
     return {
         "sequence": sequence,
@@ -85,7 +99,7 @@ def print_results(results):
     if results['type'] == 'DNA':
         print("  (Berechnung basiert auf 0.34 nm pro Basenpaar in einer Doppelhelix)")
     else:
-        print("  (Berechnung basiert auf 0.6 nm pro Base in einem Einzelstrang)")
+        print("  (Berechnung berücksichtigt die Faltung: 0.59 nm/ungepaarte Base + 0.34 nm/Basenpaar)")
     
     print(f"\nMinimale freie Energie (MFE): {results['mfe_kcal_mol']} kcal/mol")
     print("  (Je negativer der Wert, desto stabiler ist die vorhergesagte Struktur)")
@@ -118,3 +132,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nEin unerwarteter Fehler ist aufgetreten: {e}")
         print("Stellen Sie sicher, dass die 'vienna-rna' Bibliothek korrekt installiert ist.")
+
