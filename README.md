@@ -8,9 +8,8 @@ Die Suite besteht aus vier Hauptmodulen, die jeweils für spezifische Analyse-Wo
 
 
 ### 🥑 Avocado (Batch-Analyse)
-    <img width="933" height="409" alt="startseite" src="https://github.com/user-attachments/assets/9c1e8e88-7be5-4512-a1db-03b105a1b760" />
-
     
+![Avocado](docs/avocado.png)
 -   Batch-Analyse von *.h5 / *.csv\* direkt aus Server-Ordnern
 -   Multiprocessing-Jobhandling mit Fortschritts-Logs
 -   Automatische FD-Plots und Exporte (SMOOTH, PLOT, STEPS, TOTAL, FIT)
@@ -19,6 +18,7 @@ Die Suite besteht aus vier Hauptmodulen, die jeweils für spezifische Analyse-Wo
 
 ### 🍅 Tomato (Interaktive FD-Kurven)
 
+![Tomato](docs/tomato.png)
 -   Einzeldateien (Upload oder Serverpfad) laden
 -   Interaktive Step-Erkennung und manuelles Setzen
 -   DS-Fit und SS-Fits zwischen Steps
@@ -28,6 +28,7 @@ Die Suite besteht aus vier Hauptmodulen, die jeweils für spezifische Analyse-Wo
 
 ### 🥕 Carrot (Excel Post-Processing)
 
+![Carrot](docs/carrot.png)
 -   Bestehende POTATO-Ergebnis-Excel laden
 -   Berechnung von ΔLc via eFJC-Modell (physikalisch)
 -   Plots:
@@ -38,8 +39,7 @@ Die Suite besteht aus vier Hauptmodulen, die jeweils für spezifische Analyse-Wo
 -   Ergebnis: neue Excel mit Datenblatt und eingebetteten Plots
 
 ## Beispielplot
-
-![Scatter Beispiel](docs/plot_hexbin_example.png)
+![Scatter Beispiel](docs/plot.png)
 
 
 ### 🥦 Broccoli (RNA-Struktur & Simulation)
