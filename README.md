@@ -8,8 +8,9 @@ Die Suite besteht aus vier Hauptmodulen, die jeweils für spezifische Analyse-Wo
 
 
 ### 🥑 Avocado (Batch-Analyse)
+    <img width="933" height="409" alt="startseite" src="https://github.com/user-attachments/assets/9c1e8e88-7be5-4512-a1db-03b105a1b760" />
 
-    (docs/startseite.png)
+    
 -   Batch-Analyse von *.h5 / *.csv\* direkt aus Server-Ordnern
 -   Multiprocessing-Jobhandling mit Fortschritts-Logs
 -   Automatische FD-Plots und Exporte (SMOOTH, PLOT, STEPS, TOTAL, FIT)
