@@ -34,6 +34,9 @@ from POTATO_config import (
 import POTATO_find_steps as PFS
 from POTATO_fitting import fitting_ds, fitting_ss
 
+# Import the function to add the Dash app
+from dna_analyzer import add_dash_to_flask
+
 # --- matplotlib fill_between guard (verhindert Length-Mismatch-Fehler) ---
 import numpy as _np
 import matplotlib.axes as _maxes
@@ -58,6 +61,10 @@ _maxes.Axes.fill_between = _fill_between_guard
 app = Flask(__name__)
 app.secret_key = "change-me"
 app.register_blueprint(report_bp)
+
+# Add the Dash app to the Flask server
+add_dash_to_flask(app)
+
 BASE = Path(__file__).parent.resolve()
 UPLOAD_DIR = BASE / "uploads"
 ANALYSIS_DIR = BASE / "analysis"
