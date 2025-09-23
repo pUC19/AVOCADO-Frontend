@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Final, complete, and corrected version with adjustable parameters and full HTML.
+# Final, complete version with "applyForce" visualization on click.
 import dash
 import dash_bio as dashbio
 from dash import dcc, html
@@ -9,6 +9,7 @@ import re
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import json
 
 # --- Polymer Physics Models & Helpers ---
 KBT_PN_NM = 4.114
@@ -25,13 +26,7 @@ def fjc_extension(force, Lk, Lc):
     if x > 300: return Lc * (1 - 1/x)
     return Lc * (np.tanh(x)**-1 - 1/x)
 
-def calculate_contour_length(sequence, seq_type, structure):
-    if seq_type == 'DNA': return len(sequence) * 0.34
-    num_unpaired = structure.count('.')
-    num_pairs = structure.count('(')
-    return (num_unpaired * 0.59) + (num_pairs * 0.34)
-
-def parse_structure_final(structure):
+def parse_stems_detailed(structure):
     bp_map = [-1] * len(structure)
     stack = []
     for i, char in enumerate(structure):
@@ -39,30 +34,30 @@ def parse_structure_final(structure):
         elif char == ')' and stack:
             j = stack.pop()
             bp_map[j], bp_map[i] = i, j
+    
     stems, visited = [], [False] * len(structure)
     for i in range(len(structure)):
         if bp_map[i] > i and not visited[i]:
-            stem_pairs = []
+            current_stem_pairs = []
             curr_i, curr_j = i, bp_map[i]
             while curr_i < curr_j and bp_map[curr_i] == curr_j and not visited[curr_i]:
                 visited[curr_i] = visited[curr_j] = True
-                stem_pairs.append((curr_i, curr_j))
+                current_stem_pairs.append((curr_i, curr_j))
                 curr_i, curr_j = curr_i + 1, curr_j - 1
-            if len(stem_pairs) >= 3:
-                start_bp, end_bp = stem_pairs[0][0], stem_pairs[0][1]
-                stems.append({'start': start_bp, 'end': end_bp, 'len': len(stem_pairs)})
+            
+            if len(current_stem_pairs) >= 3: # Minimal stem length
+                stems.append({'pairs': current_stem_pairs, 'len': len(current_stem_pairs)})
     return stems
 
 def analyze_and_simulate(sequence, handle_bp, params):
     sequence = sequence.upper().strip()
-    if not re.match("^[ACGTU]+$", sequence): return {"error": "Invalid characters."}
-    if len(sequence) < 10: return {"error": "Sequence too short."}
+    if not re.match("^[ACGTU]+$", sequence): return {"error": "Ungültige Zeichen in der Sequenz."}
+    if len(sequence) < 10: return {"error": "Sequenz zu kurz."}
     
     try:
         rna_sequence = sequence.replace('T', 'U')
         (structure, mfe) = RNA.fold(rna_sequence)
-        contour_len = calculate_contour_length(sequence, 'RNA' if 'U' in sequence else 'DNA', structure)
-
+        
         RNA.pf_fold(rna_sequence)
         n = len(rna_sequence)
         prob_matrix = np.zeros((n, n))
@@ -72,60 +67,55 @@ def analyze_and_simulate(sequence, handle_bp, params):
                 if prob > 1e-4: prob_matrix[i-1, j-1] = prob_matrix[j-1, i-1] = prob
 
         analysis = {
-            "sequence": sequence, "length_bp": n, "contour_length_nm": round(contour_len, 2),
+            "sequence": sequence, "length_bp": n,
             "secondary_structure": structure, "mfe_kcal_mol": round(mfe, 2),
-            "base_pairing_probabilities": prob_matrix.tolist(), "error": None
+            "base_pairing_probabilities": prob_matrix.tolist(),
+            "error": None, "stems_info": []
         }
 
-        stems = parse_structure_final(structure)
+        stems = parse_stems_detailed(structure)
         for s in stems:
-            sub_seq = rna_sequence[s['start'] : s['end'] + 1]
-            sub_struct = structure[s['start'] : s['end'] + 1]
+            # Construct substring and substructure for energy calculation
+            min_idx = min(p[0] for p in s['pairs'])
+            max_idx = max(p[1] for p in s['pairs'])
+            sub_seq = rna_sequence[min_idx : max_idx + 1]
+            sub_struct_list = list('.' * len(sub_seq))
+            for p1, p2 in s['pairs']:
+                sub_struct_list[p1 - min_idx] = '('
+                sub_struct_list[p2 - min_idx] = ')'
+            sub_struct = "".join(sub_struct_list)
+            
             s['energy_kcal'] = RNA.energy_of_struct(sub_seq, sub_struct)
             
-            lc_unfolded_nt = s['end'] - s['start'] + 1
+            lc_unfolded_nt = max_idx - min_idx + 1
             s['lc_unfolded'] = lc_unfolded_nt * params['len_nt_ssrna']
             s['lc_folded'] = s['len'] * params['rise_bp_dsrna']
             s['delta_lc'] = s['lc_unfolded'] - s['lc_folded']
             
             energy_pn_nm = abs(s['energy_kcal']) * params['salt_correction_factor']
             s['f_unfold'] = (energy_pn_nm / s['delta_lc']) if s['delta_lc'] > 0.1 else 1000
-
-        stems.sort(key=lambda x: x['f_unfold'])
         
+        stems.sort(key=lambda x: x['f_unfold'])
+        analysis['stems_info'] = [{'pairs': s['pairs'], 'f_unfold': s['f_unfold'], 'lc_unfolded': s['lc_unfolded'], 'lc_folded': s['lc_folded']} for s in stems]
+
         force_vec = np.linspace(0.1, 60, 300)
         lc_handles = handle_bp * params['rise_bp_dsdna']
         
         unfolding_x = []
-        unfolded_stems_indices = set()
         for f in force_vec:
-            newly_unfolded = {i for i, s in enumerate(stems) if i not in unfolded_stems_indices and f >= s['f_unfold']}
-            unfolded_stems_indices.update(newly_unfolded)
+            unfolded_stems_indices = {i for i, s in enumerate(stems) if f >= s['f_unfold']}
             lc_ssrna_total = sum(stems[i]['lc_unfolded'] for i in unfolded_stems_indices)
             lc_dsrna_total = sum(stems[i]['lc_folded'] for i in range(len(stems)) if i not in unfolded_stems_indices)
+            
             ext_handles = wlc_extension(f, params['lp_dsdna'], lc_handles)
             ext_dsrna = wlc_extension(f, params['lp_dsrna'], lc_dsrna_total)
             ext_ssrna = fjc_extension(f, params['lk_ssrna'], lc_ssrna_total)
             unfolding_x.append(ext_handles + ext_dsrna + ext_ssrna)
         
-        refolding_x = []
-        unfolded_stems_indices = set(range(len(stems)))
-        for f in reversed(force_vec):
-            f_refold_threshold = f * 1.2
-            refolded = {i for i in unfolded_stems_indices if f_refold_threshold >= stems[i]['f_unfold']}
-            unfolded_stems_indices -= refolded
-            lc_ssrna_total = sum(stems[i]['lc_unfolded'] for i in unfolded_stems_indices)
-            lc_dsrna_total = sum(stems[i]['lc_folded'] for i in range(len(stems)) if i not in unfolded_stems_indices)
-            ext_handles = wlc_extension(f, params['lp_dsdna'], lc_handles)
-            ext_dsrna = wlc_extension(f, params['lp_dsrna'], lc_dsrna_total)
-            ext_ssrna = fjc_extension(f, params['lk_ssrna'], lc_ssrna_total)
-            refolding_x.insert(0, ext_handles + ext_dsrna + ext_ssrna)
-
         analysis['fd_unfolding'] = {'x': unfolding_x, 'y': force_vec.tolist()}
-        analysis['fd_refolding'] = {'x': refolding_x, 'y': force_vec.tolist()}
         
     except Exception as e:
-        return {"error": f"Analysis Error: {e}"}
+        return {"error": f"Analysefehler: {e}"}
         
     return analysis
 
@@ -135,7 +125,6 @@ def add_dash_to_flask(server):
                     external_stylesheets=["https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"])
     app.title = "RNA/DNA Analyzer"
     
-    # This is the full, correct HTML index string required by Dash.
     app.index_string = '''
     <!DOCTYPE html>
     <html lang="de" data-bs-theme="light">
@@ -186,134 +175,190 @@ def add_dash_to_flask(server):
                 {%scripts%}
                 {%renderer%}
             </footer>
-            <script>
-                (function(){
-                    const key = "potato-theme";
-                    const saved = localStorage.getItem(key);
-                    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                    const setTheme = t => document.documentElement.setAttribute('data-bs-theme', t);
-                    setTheme(saved || (prefersDark ? 'dark' : 'light'));
-                })();
-            </script>
         </body>
     </html>
     '''
 
     app.layout = html.Div(className='container-xl my-4', children=[
+        dcc.Store(id='analysis-results-store'),
         html.A("← Zurück zur Startseite", href="/", className="nav-link-custom"),
-        html.H1("DNA/RNA Structure Analyzer & FD Simulator", className="section-title h3 mb-4"),
+        html.H1("Interaktiver DNA/RNA Structure Analyzer", className="section-title h3 mb-4"),
         
-        html.Div(className='card card-glass mb-4', children=[
-            html.Div(className='card-body', children=[
-                dcc.Textarea(id='sequence-input', placeholder='RNA/DNA sequence here...',
-                             className='form-control mb-3', style={'height': 100},
-                             value='TTTTACCTGATCAGGTGCTTTTTTTTGCACCTGATCAGGTATTT'),
-                html.Button('Analysieren & Simulieren', id='submit-button', n_clicks=0, className='btn btn-primary'),
-            ])
-        ]),
-
-        html.Div(className='card card-glass mb-4', children=[
-            html.Div(className='card-body', children=[
-                html.H3("Simulationsparameter", className="h5 mb-3"),
-                html.Div(className='row g-3', children=[
-                    html.Div(className='col-md-4', children=[
-                        html.Label("Salz-Korrekturfaktor (für ΔG)", htmlFor="salt-factor-input", className="form-label"),
-                        dcc.Input(id="salt-factor-input", type="number", value=2.9, step=0.1, className="form-control")
-                    ]),
-                    html.Div(className='col-md-4', children=[
-                        html.Label("dsDNA Handles (bp)", htmlFor="handles-input", className="form-label"),
-                        dcc.Input(id="handles-input", type="number", value=1000, step=100, className="form-control")
-                    ]),
-                    html.Div(className='col-md-4', children=[
-                        html.Label("dsDNA Lp (nm)", htmlFor="lp-dsdna-input", className="form-label"),
-                        dcc.Input(id="lp-dsdna-input", type="number", value=50.0, step=1, className="form-control")
-                    ]),
+        html.Div(className='row g-4', children=[
+            html.Div(className='col-lg-4', children=[
+                html.Div(className='card card-glass sticky-lg-top', style={'top': '20px'}, children=[
+                    html.Div(className='card-body', children=[
+                        dcc.Textarea(id='sequence-input', placeholder='RNA/DNA Sequenz hier eingeben...',
+                                     className='form-control mb-3', style={'height': 100},
+                                     value='GGGCUAUUACGAGCGGUGGAGUUUUUCCUGCGCCGGUAGGCGCCAGGAAGCUUU'),
+                        html.H3("In Silico Mutagenese (Optional)", className="h6 mt-4 mb-3"),
+                        html.Div(className='row g-3 align-items-center', children=[
+                            html.Div(className='col-md-6', children=[
+                                dcc.Input(id='mutation-position-input', type='number', placeholder='Position (1-basiert)', className='form-control')
+                            ]),
+                            html.Div(className='col-md-6', children=[
+                                dcc.Dropdown(id='mutation-base-input',
+                                             options=[{'label': b, 'value': b} for b in ['A', 'C', 'G', 'T', 'U']],
+                                             placeholder='Neue Base', clearable=True)
+                            ])
+                        ]),
+                        html.H3("Simulationsparameter", className="h6 mt-4 mb-3"),
+                        html.Div(className='row g-3', children=[
+                            html.Div(className='col-md-6', children=[
+                                html.Label("Salz-Korrektur", htmlFor="salt-factor-input", className="form-label small"),
+                                dcc.Input(id="salt-factor-input", type="number", value=2.9, step=0.1, className="form-control")
+                            ]),
+                             html.Div(className='col-md-6', children=[
+                                html.Label("dsDNA Handles (bp)", htmlFor="handles-input", className="form-label small"),
+                                dcc.Input(id="handles-input", type="number", value=1000, step=100, className="form-control")
+                            ]),
+                        ]),
+                        html.Button('Analysieren & Simulieren', id='submit-button', n_clicks=0, className='btn btn-primary w-100 mt-4'),
+                    ])
                 ])
+            ]),
+            html.Div(className='col-lg-8', children=[
+                 dcc.Loading(id="loading-spinner", type="default", children=html.Div(id="output-container"))
             ])
-        ]),
-        
-        dcc.Loading(id="loading-spinner", type="circle", children=html.Div(id="output-container"))
+        ])
     ])
 
     @app.callback(
-        Output('output-container', 'children'),
+        Output('analysis-results-store', 'data'),
         Input('submit-button', 'n_clicks'),
         [State('sequence-input', 'value'),
          State('salt-factor-input', 'value'),
          State('handles-input', 'value'),
-         State('lp-dsdna-input', 'value')]
+         State('mutation-position-input', 'value'),
+         State('mutation-base-input', 'value')],
+        prevent_initial_call=True
     )
-    def update_all_outputs(n_clicks, sequence, salt_factor, handle_bp, lp_dsdna):
-        if not n_clicks: return ""
-        if not sequence: return html.Div("Bitte geben Sie eine Sequenz ein.", className='alert alert-warning mt-3')
-
+    def run_analysis(n_clicks, sequence, salt_factor, handle_bp, mutation_pos, mutation_base):
+        if not sequence: return dash.no_update
         params = {
             'salt_correction_factor': float(salt_factor if salt_factor is not None else 2.9),
-            'lp_dsdna': float(lp_dsdna if lp_dsdna is not None else 50.0),
-            'rise_bp_dsdna': 0.34,
-            'lp_dsrna': 63.0, 'rise_bp_dsrna': 0.29,
-            'lk_ssrna': 1.5, 'len_nt_ssrna': 0.59
+            'lp_dsdna': 50.0, 'rise_bp_dsdna': 0.34, 'lp_dsrna': 63.0, 
+            'rise_bp_dsrna': 0.29, 'lk_ssrna': 1.5, 'len_nt_ssrna': 0.59
         }
-        
-        results = analyze_and_simulate(sequence, handle_bp=int(handle_bp if handle_bp is not None else 1000), params=params)
-        
-        if results.get('error'): return html.Div(results['error'], className='alert alert-danger mt-3')
+        results_wt = analyze_and_simulate(sequence, int(handle_bp if handle_bp is not None else 1000), params)
+        results_mut = None
+        if mutation_pos is not None and mutation_base:
+            try:
+                pos_0_based = int(mutation_pos) - 1
+                if 0 <= pos_0_based < len(sequence):
+                    s_list = list(sequence)
+                    s_list[pos_0_based] = mutation_base
+                    mutated_sequence = "".join(s_list)
+                    results_mut = analyze_and_simulate(mutated_sequence, int(handle_bp), params)
+            except Exception: pass
+        return json.dumps({'wt': results_wt, 'mut': results_mut})
 
-        results_df = pd.DataFrame({
-            "Parameter": ["Länge (Basen)", "Konturlänge (nm)", "MFE (kcal/mol)"],
-            "Value": [results['length_bp'], f"~ {results['contour_length_nm']}", results['mfe_kcal_mol']]
-        })
-        forna_sequences = [{'sequence': results['sequence'].replace('T', 'U'), 'structure': results['secondary_structure'],
-                            'options': {'applyForce': True, 'circularizeExternal': True, 'labelInterval': 5}}]
-        prob_matrix = np.array(results['base_pairing_probabilities'])
-        dot_plot_fig = go.Figure(data=go.Heatmap(z=np.sqrt(prob_matrix), colorscale='Blues', showscale=False))
-        dot_plot_fig.update_layout(title='Dot-Plot (√Probability)', yaxis_autorange='reversed', template="plotly_white", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+    @app.callback(
+        Output('output-container', 'children'),
+        Input('analysis-results-store', 'data')
+    )
+    def update_display(stored_data):
+        if not stored_data:
+            return html.Div("Bitte geben Sie eine Sequenz ein und starten Sie die Analyse.", className="alert alert-info")
         
+        data = json.loads(stored_data)
+        results_wt, results_mut = data.get('wt'), data.get('mut')
+
+        if not results_wt or results_wt.get('error'):
+            return html.Div(results_wt.get('error', "Unbekannter Fehler."), className="alert alert-danger")
+
         fd_fig = go.Figure()
-        fd_fig.add_trace(go.Scatter(x=results['fd_unfolding']['x'], y=results['fd_unfolding']['y'], mode='lines', name='Unfolding', line=dict(color='royalblue')))
-        fd_fig.add_trace(go.Scatter(x=results['fd_refolding']['x'], y=results['fd_refolding']['y'], mode='lines', name='Refolding', line=dict(color='crimson')))
-        fd_fig.update_layout(title='Simulierte FD-Kurve', xaxis_title='Extension (nm)', yaxis_title='Force (pN)', template="plotly_white", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+        fd_fig.add_trace(go.Scatter(x=results_wt['fd_unfolding']['x'], y=results_wt['fd_unfolding']['y'], mode='lines', name='WT Unfolding', line=dict(color='royalblue')))
+        if results_mut and not results_mut.get('error'):
+             fd_fig.add_trace(go.Scatter(x=results_mut['fd_unfolding']['x'], y=results_mut['fd_unfolding']['y'], mode='lines', name='Mutant Unfolding', line=dict(color='skyblue', dash='dash')))
+        fd_fig.update_layout(title='Simulierte FD-Kurve', xaxis_title='Extension (nm)', yaxis_title='Force (pN)', template="plotly_white", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+        
+        forna_wt = [{'sequence': results_wt['sequence'].replace('T', 'U'), 'structure': results_wt['secondary_structure']}]
+        
+        dot_plot_target = results_mut if results_mut and not results_mut.get('error') else results_wt
+        prob_matrix = np.array(dot_plot_target['base_pairing_probabilities'])
+        dot_plot_fig = go.Figure(data=go.Heatmap(z=np.sqrt(prob_matrix), colorscale='Blues', showscale=False))
+        dot_plot_fig.update_layout(title='Dot-Plot der Basenpaarungswahrscheinlichkeit', yaxis_autorange='reversed', template="plotly_white", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
 
-        return html.Div(className='row g-4 mt-2', children=[
-            html.Div(className='col-12 col-lg-7', children=[
-                html.Div(className='card card-glass h-100', children=[
-                    html.Div(className='card-body', children=[
-                        dcc.Tabs(children=[
-                            dcc.Tab(label='FD Simulation', children=dcc.Graph(figure=fd_fig)),
-                            dcc.Tab(label='2D-Struktur (MFE)', children=dashbio.FornaContainer(sequences=forna_sequences, height=500)),
-                            dcc.Tab(label='Dot-Plot', children=dcc.Graph(figure=dot_plot_fig)),
+        structure_comparison_content = []
+        if results_mut and not results_mut.get('error'):
+            forna_mut = [{'sequence': results_mut['sequence'].replace('T', 'U'), 'structure': results_mut['secondary_structure']}]
+            structure_comparison_content = html.Div(className='row mt-3', children=[
+                html.Div(className='col-lg-6', children=[html.H4("Wildtyp Struktur", className="h6 text-center mb-2"), dashbio.FornaContainer(sequences=forna_wt, height=500)]),
+                html.Div(className='col-lg-6', children=[html.H4("Mutanten Struktur", className="h6 text-center mb-2"), dashbio.FornaContainer(sequences=forna_mut, height=500)])
+            ])
+        else:
+            structure_comparison_content = html.Div(className='mt-3', children=[dashbio.FornaContainer(sequences=forna_wt, height=500)])
+
+        summary_content = [html.H4("Wildtyp Analyse", className="h6"), html.P(f"MFE: {results_wt['mfe_kcal_mol']} kcal/mol")]
+        if results_mut and not results_mut.get('error'):
+            delta_mfe = results_mut['mfe_kcal_mol'] - results_wt['mfe_kcal_mol']
+            summary_content.extend([html.Hr(), html.H4("Mutanten Analyse", className="h6"), html.P(f"MFE: {results_mut['mfe_kcal_mol']} kcal/mol"), html.P(f"ΔMFE: {delta_mfe:.2f} kcal/mol", className="fw-bold")])
+            
+        return html.Div(className='card card-glass mb-4', children=[
+            html.Div(className='card-body', children=[
+                dcc.Tabs(id="output-tabs", children=[
+                    dcc.Tab(label='Interaktive Analyse', children=html.Div(className='row g-3 pt-3', children=[
+                        html.Div(className='col-12', children=[dcc.Graph(id='fd-curve-graph', figure=fd_fig)]),
+                        html.Div(className='col-12', children=[
+                            html.P("Tippen Sie auf die Kurve, um die entfaltete Struktur zu sehen.", className="text-center text-muted small"),
+                            dashbio.FornaContainer(id='forna-container-interactive', sequences=forna_wt)
                         ])
-                    ])
-                ])
-            ]),
-            html.Div(className='col-12 col-lg-5', children=[
-                html.Div(className='card card-glass h-100', children=[
-                    html.Div(className='card-body', children=[
-                        html.H3("Analyse & Simulation", className="h5"),
-                        dcc.Tabs(className="mt-3", children=[
-                            dcc.Tab(label='Zusammenfassung', children=html.Div(className="mt-3", children=[
-                                html.Table(className="table", children=[
-                                    html.Thead(html.Tr([html.Th(col) for col in results_df.columns])),
-                                    html.Tbody([html.Tr([html.Td(results_df.iloc[i][col]) for col in results_df.columns]) for i in range(len(results_df))])
-                                ])
-                            ])),
+                    ])),
+                    dcc.Tab(label='2D-Struktur Vergleich', children=structure_comparison_content),
+                    dcc.Tab(label='Weitere Analysen', children=html.Div(className='p-3', children=[
+                        dcc.Tabs([
+                            dcc.Tab(label='Zusammenfassung', children=html.Div(className='pt-3', children=summary_content)),
+                            dcc.Tab(label='Dot-Plot', children=dcc.Graph(figure=dot_plot_fig)),
                             dcc.Tab(label='Dot-Bracket', children=html.Div(className='dot-bracket-display mt-3', children=[
-                                html.P("Sequenz:", className='fw-bold mb-1'), html.Code(results['sequence']),
-                                html.P("Struktur:", className='fw-bold mb-1 mt-3'), html.Code(results['secondary_structure'])
-                            ])),
-                            dcc.Tab(label='Parameter', children=html.Div(className="mt-3", children=[
-                                html.P("Die Simulation wurde mit folgenden Parametern durchgeführt:"),
-                                html.Ul([
-                                    html.Li(f"Salz-Korrekturfaktor: {params['salt_correction_factor']}"),
-                                    html.Li(f"dsDNA Handles: {handle_bp} bp, Lp = {params['lp_dsdna']} nm"),
-                                    html.Li(f"dsRNA: Lp = {params['lp_dsrna']} nm"),
-                                    html.Li(f"ssRNA: Kuhn-Länge = {params['lk_ssrna']} nm"),
-                                ])
+                                html.P("Sequenz:", className='fw-bold mb-1'), html.Code(dot_plot_target['sequence']),
+                                html.P("Struktur:", className='fw-bold mb-1 mt-3'), html.Code(dot_plot_target['secondary_structure'])
                             ]))
                         ])
-                    ])
+                    ]))
                 ])
             ])
         ])
+        
+    @app.callback(
+        Output('forna-container-interactive', 'sequences'),
+        Input('fd-curve-graph', 'clickData'),
+        State('analysis-results-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_forna_on_click(clickData, stored_data):
+        if not clickData or not stored_data: return dash.no_update
+        
+        data = json.loads(stored_data)
+        point = clickData['points'][0]
+        force_clicked = point['y']
+        curve_index = point['curveNumber']
+        
+        target_analysis = data.get('mut') if curve_index == 1 and data.get('mut') and not data['mut'].get('error') else data.get('wt')
+        
+        if not target_analysis: return dash.no_update
+        
+        sequence = target_analysis['sequence'].replace('T', 'U')
+        original_structure = target_analysis['secondary_structure']
+        stems = target_analysis.get('stems_info', [])
+        
+        # Determine which base pairs are broken at the clicked force
+        structure_list = list(original_structure)
+        unfolded_stems_pairs = [
+            pair for s in stems if s['f_unfold'] <= force_clicked for pair in s['pairs']
+        ]
+
+        for i, j in unfolded_stems_pairs:
+            structure_list[i] = '.'
+            structure_list[j] = '.'
+
+        new_structure = "".join(structure_list)
+        
+        new_sequences = [{'sequence': sequence, 'structure': new_structure, 'options': {
+            'applyForce': True,        # This is the key for the "pulled" look
+            'circularizeExternal': False, # This makes it linear
+            'labelInterval': 10,
+        }}]
+        return new_sequences
 
     return server
