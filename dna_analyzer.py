@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Final version restoring FornaContainer and keeping the coupled linear annotation view.
+# Final, fully interactive version with corrected thermal analysis callback using MFE structure.
 import dash
 import dash_bio as dashbio
 from dash import dcc, html
@@ -96,9 +96,18 @@ def analyze_and_simulate(sequence, handle_bp, params, annotation_string):
             for j in range(i + 1, n + 1):
                 prob = RNA.get_pr(i, j)
                 if prob > 1e-4: prob_matrix[i-1, j-1] = prob_matrix[j-1, i-1] = prob
+        
+        melt_data = RNA.heat_capacity(rna_sequence, T_min=0, T_max=100)
+        temperatures = [d.temperature for d in melt_data]
+        heat_capacity = [d.heat_capacity for d in melt_data]
         mutation_df = run_mutation_scan(rna_sequence, mfe)
         annotations = parse_annotations(annotation_string)
-        analysis = {"sequence": sequence, "length_bp": n, "secondary_structure": structure, "mfe_kcal_mol": round(mfe, 2), "base_pairing_probabilities": prob_matrix.tolist(), "mutation_scan_results": mutation_df.to_dict('records'), "annotations": annotations, "error": None, "stems_info": []}
+        analysis = {
+            "sequence": sequence, "length_bp": n, "secondary_structure": structure, "mfe_kcal_mol": round(mfe, 2),
+            "base_pairing_probabilities": prob_matrix.tolist(), "mutation_scan_results": mutation_df.to_dict('records'),
+            "annotations": annotations, "thermal_melt": {"temp": temperatures, "hc": heat_capacity},
+            "error": None, "stems_info": []
+        }
         stems = parse_stems_detailed(structure)
         for s in stems:
             min_idx = min(p[0] for p in s['pairs']); max_idx = max(p[1] for p in s['pairs'])
@@ -195,8 +204,8 @@ def add_dash_to_flask(server):
         data = json.loads(stored_data)
         results_wt = data.get('wt')
         if not results_wt or results_wt.get('error'): return html.Div(results_wt.get('error', "Unbekannter Fehler."), className="alert alert-danger")
-        fd_fig, heatmap_fig, dot_plot_fig = build_fd_figure(data), build_heatmap_figure(results_wt), build_dot_plot_figure(data)
-        return html.Div(className='card card-glass', children=[html.Div(className='card-body', children=[dcc.Tabs(id="output-tabs", children=[build_interactive_analysis_tab(fd_fig, results_wt), dcc.Tab(label='Mutations-Heatmap', children=build_description_card("Was sehe ich hier?", "Diese Heatmap zeigt die Auswirkung jeder möglichen einzelnen Mutation. Rote Bereiche sind stark destabilisierend (schlecht für die Faltung), blaue Bereiche stabilisierend. So finden Sie strukturelle 'Hotspots'.") + [dcc.Graph(figure=heatmap_fig)]), build_comparison_tab(data), build_other_analyses_tab(data, dot_plot_fig)])])])
+        fd_fig, heatmap_fig, dot_plot_fig, melt_fig = build_fd_figure(data), build_heatmap_figure(results_wt), build_dot_plot_figure(data), build_melt_curve_figure(data)
+        return html.Div(className='card card-glass', children=[html.Div(className='card-body', children=[dcc.Tabs(id="output-tabs", children=[build_interactive_analysis_tab(fd_fig, results_wt), build_thermal_stability_tab(melt_fig, results_wt), dcc.Tab(label='Mutations-Heatmap', children=build_description_card("Was sehe ich hier?", "Diese Heatmap zeigt die Auswirkung jeder möglichen einzelnen Mutation. Rote Bereiche sind stark destabilisierend (schlecht für die Faltung), blaue Bereiche stabilisierend. So finden Sie strukturelle 'Hotspots'.") + [dcc.Graph(figure=heatmap_fig)]), build_comparison_tab(data), build_other_analyses_tab(data, dot_plot_fig)])])])
     @app.callback(Output('forna-container-interactive', 'sequences'), Input('fd-curve-graph', 'clickData'), State('analysis-results-store', 'data'), prevent_initial_call=True)
     def update_forna_on_click(clickData, stored_data):
         if not clickData or not stored_data: return dash.no_update
@@ -208,6 +217,24 @@ def add_dash_to_flask(server):
         for i, j in unfolded_pairs: struct_list[i], struct_list[j] = '.', '.'
         color_string, _, _ = get_annotation_colors(target.get('annotations', []))
         return [{'sequence': seq, 'structure': "".join(struct_list), 'options': {'applyForce': True, 'circularizeExternal': False, 'labelInterval': 10, 'customColors': {'domain': [0, 1], 'range': ['#ffffff', '#ffffff'], 'colorValues': {'MyColoring': color_string}, 'colorAccessor': 'MyColoring'}}}]
+    @app.callback(Output('thermal-forna-container', 'sequences'), Input('melt-curve-graph', 'clickData'), State('analysis-results-store', 'data'), prevent_initial_call=True)
+    def update_thermal_forna(clickData, stored_data):
+        if not clickData or not stored_data: return dash.no_update
+        data = json.loads(stored_data)
+        point = clickData['points'][0]
+        temp, curve_index = point['x'], point['curveNumber']
+        target = data.get('mut') if curve_index == 1 and data.get('mut') and not data['mut'].get('error') else data.get('wt')
+        if not target: return dash.no_update
+        
+        seq_rna = target['sequence'].replace('T','U')
+        md = RNA.md()
+        md.temperature = float(temp)
+        fc = RNA.fold_compound(seq_rna, md)
+        (new_struct, _) = fc.mfe()
+        
+        color_string, _, _ = get_annotation_colors(target.get('annotations', []))
+
+        return [{'sequence': seq_rna, 'structure': new_struct, 'options': {'applyForce': False, 'circularizeExternal': True, 'labelInterval': 10, 'customColors': {'domain': [0, 1], 'range': ['#ffffff', '#ffffff'], 'colorValues': {'MyColoring': color_string}, 'colorAccessor': 'MyColoring'}}}]
     def get_annotation_colors(annotations):
         colors = ['rgba(99, 110, 250, 0.4)', 'rgba(239, 85, 59, 0.4)', 'rgba(0, 204, 150, 0.4)', 'rgba(171, 99, 250, 0.4)', 'rgba(255, 161, 90, 0.4)', 'rgba(25, 211, 243, 0.4)']
         color_string_parts, legend_items = [], []
@@ -220,11 +247,8 @@ def add_dash_to_flask(server):
         return ", ".join(color_string_parts), html.Div(legend_items, className="mt-2 d-flex flex-wrap") if legend_items else None, name_to_color
     def build_annotated_linear_view(sequence, annotations, name_to_color):
         if not annotations: return html.Div(sequence, className="linear-sequence-view")
-        
-        spans = []
-        last_idx = 0
+        spans = []; last_idx = 0
         sorted_annos = sorted(annotations, key=lambda x: x['start'])
-        
         for anno in sorted_annos:
             start, end, name = anno['start'] - 1, anno['end'], anno['name']
             if start > last_idx: spans.append(sequence[last_idx:start])
@@ -232,7 +256,6 @@ def add_dash_to_flask(server):
             spans.append(html.Span(sequence[start:end], style={'backgroundColor': color, 'borderRadius': '3px', 'padding': '2px 0'}))
             last_idx = end
         if last_idx < len(sequence): spans.append(sequence[last_idx:])
-        
         return html.Div(spans, className="linear-sequence-view")
     def build_description_card(title, text):
         return [html.Details([html.Summary(title, className="h6"),html.P(text, className="text-muted mt-2 small")], className="mb-3")]
@@ -252,13 +275,24 @@ def add_dash_to_flask(server):
         fig = go.Figure(data=go.Heatmap(z=np.sqrt(np.array(target['base_pairing_probabilities'])), colorscale='Blues', showscale=False))
         fig.update_layout(title_text='Dot-Plot', yaxis_autorange='reversed', template="plotly_white", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
         return fig
+    def build_melt_curve_figure(data):
+        wt, mut = data.get('wt'), data.get('mut'); fig = go.Figure()
+        fig.add_trace(go.Scatter(x=wt['thermal_melt']['temp'], y=wt['thermal_melt']['hc'], mode='lines', name='WT Schmelzkurve', line=dict(color='crimson')))
+        if mut and not mut.get('error'): fig.add_trace(go.Scatter(x=mut['thermal_melt']['temp'], y=mut['thermal_melt']['hc'], mode='lines', name='Mutante', line=dict(color='lightcoral', dash='dash')))
+        fig.update_layout(title_text='Thermische Schmelzkurve', template="plotly_white", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', xaxis_title='Temperatur (°C)', yaxis_title='Hitzekapazität (kcal/mol/K)')
+        return fig
     def build_interactive_analysis_tab(fd_fig, wt):
         color_string, legend, name_to_color = get_annotation_colors(wt.get('annotations', []))
         sequences = [{'sequence': wt['sequence'].replace('T', 'U'), 'structure': wt['secondary_structure'], 'options': {'applyForce': False, 'circularizeExternal': True, 'labelInterval': 10, 'customColors': {'domain': [0, 1], 'range': ['#ffffff', '#ffffff'], 'colorValues': {'MyColoring': color_string}, 'colorAccessor': 'MyColoring'}}}]
         linear_view = build_annotated_linear_view(wt['sequence'], wt.get('annotations', []), name_to_color)
-        return dcc.Tab(label='Interaktive Analyse', children=html.Div(className='p-3', children=
+        return dcc.Tab(label='Mechanische Stabilität', children=html.Div(className='p-3', children=
             build_description_card("Was sehe ich hier?", "Diese Ansicht koppelt die mechanische Stabilität (oben) mit der 2D-Faltung. Ein Tipp auf die FD-Kurve aktualisiert die 2D-Struktur und zeigt den entfalteten Zustand. Darunter sehen Sie Ihre Annotationen in der 2D- und der linearen Sequenz-Ansicht.") +
             [dcc.Graph(id='fd-curve-graph', figure=fd_fig), dashbio.FornaContainer(id='forna-container-interactive', sequences=sequences), html.Hr(), linear_view, legend or '']))
+    def build_thermal_stability_tab(melt_fig, wt):
+        initial_sequences = [{'sequence': wt['sequence'].replace('T', 'U'), 'structure': wt['secondary_structure']}]
+        return dcc.Tab(label='Thermische Stabilität', children=html.Div(className='p-3', children=
+            build_description_card("Was sehe ich hier?", "Diese Ansicht koppelt die thermische Stabilität mit der 2D-Faltung. Ein Tipp auf die Schmelzkurve berechnet die wahrscheinlichste Faltung bei dieser Temperatur neu und zeigt sie unten an.") +
+            [dcc.Graph(id='melt-curve-graph', figure=melt_fig), dashbio.FornaContainer(id='thermal-forna-container', sequences=initial_sequences)]))
     def build_comparison_tab(data):
         wt, mut = data.get('wt'), data.get('mut')
         color_string_wt, legend_wt, _ = get_annotation_colors(wt.get('annotations', []))
