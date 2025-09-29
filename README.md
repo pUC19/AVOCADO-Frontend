@@ -43,8 +43,10 @@ Die Suite besteht aus vier Hauptmodulen, die jeweils für spezifische Analyse-Wo
 
 
 ### 🥦 Broccoli (RNA-Struktur & Simulation)
-
 Analysiert RNA/DNA-Sequenzen, sagt 2D-Strukturen voraus, simuliert FD-Kurven und ermöglicht in silico Mutagenese-Analysen zum direkten Vergleich von Wildtyp und Mutante.
+
+![Broccoli](docs/broccoli_fd.png)
+![Broccoli](docs/broccoli_struktur.png)
 
 ## Installation (Empfohlen: via Conda)
 Um Installationsprobleme mit komplexen wissenschaftlichen Paketen (insb. unter Windows) zu vermeiden, wird die Verwendung von Miniconda dringend empfohlen.
