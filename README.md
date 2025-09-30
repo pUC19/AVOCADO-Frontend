@@ -1,5 +1,5 @@
 # AVOCADO Suite 🥑
-Ein Flask-Webfrontend zur Analyse und Simulation von Optical-Tweezers-Daten. Dieses Projekt erweitert die Funktionalität des POTATO-Backends um interaktive Web-Interfaces.
+Ein Flask-Webfrontend zur Analyse und Simulation von Optical-Tweezers-Daten. Dieses Projekt erweitert die Funktionalität des POTATO-Backends um interaktive Web-Interfaces https://github.com/lpekarek/FRIED_POTATO.
 
 Erstellt von Tobias Fremter/Biochemie 3, Universität Regensburg.
 
