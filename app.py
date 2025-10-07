@@ -1247,6 +1247,7 @@ def tomato_analyze_result(job_id):
     if token in TOMATO and payload and ("results" in payload):
         TOMATO[token]["last_steps"]   = job.get("steps", [])
         TOMATO[token]["last_results"] = payload["results"]
+        TOMATO[token]["last_fits"]    = payload.get("fits", [])  # <-- DIESE ZEILE HINZUFÜGEN
     return jsonify(payload)
 
 # --------------------------------------------------------------------
@@ -1390,6 +1391,66 @@ def plot_selected_smooth():
             
     return jsonify({"curves": curves})
 
+# --------------------------------------------------------------------
+# NEU: Export für Plot-Daten (Rohdaten + Fits als CSV)
+# --------------------------------------------------------------------
+@app.post("/api/tomato/export_plot_data")
+def tomato_export_plot_data():
+    data = request.get_json(force=True, silent=True) or {}
+    token = data.get("token")
+    if not token or token not in TOMATO:
+        return jsonify({"error": "Ungültiger Token oder keine Daten geladen."}), 400
+
+    entry = TOMATO[token]
+    if "FD" not in entry or entry["FD"].shape[0] == 0:
+        return jsonify({"error": "Keine Rohdaten gefunden."}), 400
+
+    # 1. Rohdaten extrahieren
+    raw_fd = entry["FD"]
+    dist_raw = raw_fd[:, 1]
+    force_raw = raw_fd[:, 0]
+
+    # 2. Normalisierung: Kleinsten Distanzwert finden und abziehen
+    min_dist = dist_raw.min()
+    dist_normalized = dist_raw - min_dist
+    
+    # Basis-DataFrame mit den normalisierten Rohdaten erstellen
+    df_final = pd.DataFrame({
+        'Distance_(nm)': dist_normalized,
+        'Force_Raw_(pN)': force_raw
+    })
+
+    # 3. Fit-Daten interpolieren und hinzufügen
+    fits = entry.get("last_fits", [])
+    for fit in fits:
+        fit_name = fit.get('name', 'fit').replace(' ', '_')
+        dist_fit_orig = np.array(fit.get('x', []))
+        force_fit_orig = np.array(fit.get('y', []))
+
+        if len(dist_fit_orig) > 1:
+            # Wichtig: Auch die Distanz-Achse des Fits normalisieren
+            dist_fit_normalized = dist_fit_orig - min_dist
+            
+            # Kraftwerte des Fits auf die Distanzpunkte der Rohdaten interpolieren
+            force_fit_interp = np.interp(dist_normalized, dist_fit_normalized, force_fit_orig)
+            
+            # Die interpolierte Kurve als neue Spalte hinzufügen
+            df_final[f'Force_{fit_name}_(pN)'] = force_fit_interp
+
+    # 4. CSV im Speicher erstellen und für deutschen Excel-Import formatieren
+    csv_mem = io.BytesIO()
+    df_final.to_csv(csv_mem, index=False, sep=";", decimal=",", float_format='%.4f')
+    csv_mem.seek(0)
+    
+    filename_base = Path(entry.get('filename', 'plot_data')).stem
+    download_name = f"{filename_base}_graph_data_aligned.csv"
+    
+    return send_file(
+        csv_mem,
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=download_name
+    )
 
 # --------------------------------------------------------------------
 # OT-Auswertung Seite + API
